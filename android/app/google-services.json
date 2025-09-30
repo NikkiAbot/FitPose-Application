@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "154988354919",
+    "project_id": "fitpose-44abc",
+    "storage_bucket": "fitpose-44abc.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:154988354919:android:6583bfcfca8e8fba0823c2",
+        "android_client_info": {
+          "package_name": "com.example.flutter_fitpose"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA_5iauGox7WMATtGQsVb03-ICpdGUL22o"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

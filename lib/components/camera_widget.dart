@@ -4,11 +4,18 @@ import 'package:camera/camera.dart';
 class CameraWidget extends StatefulWidget {
   final bool showCamera;
   final VoidCallback? onToggleCamera;
+  final void Function(
+    CameraImage image,
+    int rotationDegrees,
+    bool isFrontCamera,
+  )?
+  onImage;
 
   const CameraWidget({
     super.key,
     required this.showCamera,
     this.onToggleCamera,
+    this.onImage,
   });
 
   @override
@@ -16,158 +23,90 @@ class CameraWidget extends StatefulWidget {
 }
 
 class _CameraWidgetState extends State<CameraWidget> {
-  CameraController? _cameraController;
+  CameraController? _controller;
   List<CameraDescription>? _cameras;
-  bool _isCameraInitialized = false;
+  bool _init = false;
+  int _rotationDegrees = 0;
+  bool _isFrontCamera = false;
 
   @override
   void initState() {
     super.initState();
-    if (widget.showCamera) {
-      _initializeCamera();
-    }
+    _initCamera();
   }
 
-  @override
-  void didUpdateWidget(CameraWidget oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (widget.showCamera && !oldWidget.showCamera) {
-      _initializeCamera();
-    } else if (!widget.showCamera && oldWidget.showCamera) {
-      _disposeCamera();
-    }
-  }
+  Future<void> _initCamera() async {
+    _cameras = await availableCameras();
+    final front = _cameras!.firstWhere(
+      (c) => c.lensDirection == CameraLensDirection.front,
+      orElse: () => _cameras!.first,
+    );
+    _isFrontCamera = front.lensDirection == CameraLensDirection.front;
 
-  Future<void> _initializeCamera() async {
-    try {
-      _cameras = await availableCameras();
-      if (_cameras != null && _cameras!.isNotEmpty) {
-        // Always use front camera for posture detection
-        CameraDescription? frontCamera;
+    _controller = CameraController(
+      front,
+      ResolutionPreset.medium,
+      enableAudio: false,
+      imageFormatGroup: ImageFormatGroup.nv21,
+    );
+    await _controller!.initialize();
+    _rotationDegrees = _controller!.description.sensorOrientation;
 
-        // Look for front-facing camera (laptop webcam/selfie camera)
-        for (final camera in _cameras!) {
-          if (camera.lensDirection == CameraLensDirection.front) {
-            frontCamera = camera;
-            break;
-          }
-        }
-
-        // If no front camera found, use external camera as fallback
-        if (frontCamera == null) {
-          for (final camera in _cameras!) {
-            if (camera.lensDirection == CameraLensDirection.external) {
-              frontCamera = camera;
-              break;
-            }
-          }
-        }
-
-        // Use first available camera if no front or external camera found
-        frontCamera ??= _cameras![0];
-
-        _cameraController = CameraController(
-          frontCamera,
-          ResolutionPreset.high,
-          enableAudio: false, // No audio needed for posture detection
-        );
-
-        await _cameraController!.initialize();
-        if (mounted) {
-          setState(() {
-            _isCameraInitialized = true;
-          });
-        }
-
-        // Show success message for posture detection
-        _showSuccessSnackBar('Camera ready for posture detection');
-      }
-    } catch (e) {
-      print('Error initializing camera: $e');
-      if (mounted) {
-        _showErrorSnackBar('Failed to initialize camera: $e');
-      }
-    }
-  }
-
-  Future<void> _disposeCamera() async {
-    await _cameraController?.dispose();
-    _cameraController = null;
-    if (mounted) {
-      setState(() {
-        _isCameraInitialized = false;
+    if (widget.onImage != null && !_controller!.value.isStreamingImages) {
+      await _controller!.startImageStream((frame) {
+        widget.onImage?.call(frame, _rotationDegrees, _isFrontCamera);
       });
     }
-  }
 
-  void _showSuccessSnackBar(String message) {
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(message),
-          backgroundColor: Colors.green,
-          duration: const Duration(seconds: 2),
-        ),
-      );
-    }
-  }
-
-  void _showErrorSnackBar(String message) {
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(message),
-          backgroundColor: Colors.red,
-          duration: const Duration(seconds: 3),
-        ),
-      );
-    }
+    if (mounted) setState(() => _init = true);
   }
 
   @override
   void dispose() {
-    _disposeCamera();
+    if (_controller?.value.isStreamingImages == true) {
+      _controller?.stopImageStream();
+    }
+    _controller?.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    if (!widget.showCamera) {
-      return const SizedBox.shrink();
+    final ctrl = _controller;
+    if (!widget.showCamera || !_init || ctrl == null) {
+      return const SizedBox.expand(
+        child: Center(child: CircularProgressIndicator()),
+      );
     }
+    final size = ctrl.value.previewSize;
+    if (size == null) {
+      return const SizedBox.expand(
+        child: Center(child: CircularProgressIndicator()),
+      );
+    }
+    final previewW = size.height;
+    final previewH = size.width;
 
-    return Container(
-      margin: const EdgeInsets.all(16.0),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.grey),
-      ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(12),
-        child:
-            _isCameraInitialized && _cameraController != null
-                ? CameraPreview(_cameraController!)
-                : Container(
-                  color: Colors.black,
-                  child: const Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        CircularProgressIndicator(
-                          valueColor: AlwaysStoppedAnimation<Color>(
-                            Colors.white,
-                          ),
-                        ),
-                        SizedBox(height: 16),
-                        Text(
-                          'Initializing camera for posture detection...',
-                          style: TextStyle(fontSize: 16, color: Colors.white),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-      ),
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        FittedBox(
+          fit: BoxFit.cover,
+          child: SizedBox(
+            width: previewW,
+            height: previewH,
+            child: CameraPreview(ctrl),
+          ),
+        ),
+        Positioned(
+          top: 12,
+          right: 12,
+          child: IconButton(
+            onPressed: widget.onToggleCamera,
+            icon: const Icon(Icons.close, color: Colors.white),
+          ),
+        ),
+      ],
     );
   }
 }

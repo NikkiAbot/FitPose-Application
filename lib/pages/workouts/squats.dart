@@ -48,8 +48,10 @@ class _SquatsState extends State<Squats> {
 
   // Thresholds
   static const double standingAngleThreshold = 165;
-  static const double bottomAngleThreshold = 100;
-  static const double deepAngle = 95;
+  static const double bottomAngleThreshold =
+      80; // was 100; require ≤80° at bottom
+  static const double deepAngle =
+      80; // was 95; align guidance with target depth
   static const double maxTorsoLeanDeg = 25;
   static const double maxHipLevelRatio = 0.05;
 
@@ -130,7 +132,16 @@ class _SquatsState extends State<Squats> {
           _rotation = next;
           _consecutiveFail = 0;
         }
+
+        // Clear state to avoid HUD/painter glitches and stuck rep state
         _latestPose = null;
+        _kneeAngle = null;
+        _torsoAngle = null;
+        _depthPercent = null;
+        _inRep = false;
+        _bottomReached = false;
+        _repPostureGood = true;
+
         _feedback = 'No pose detected';
         _postureStatus = 'Tracking...';
         _postureGood = false;
@@ -236,14 +247,14 @@ class _SquatsState extends State<Squats> {
       );
     }
 
-    final angle =
+    final kneeAngle =
         (angleLeft != null && angleRight != null)
             ? math.min(angleLeft, angleRight)
             : (angleLeft ?? angleRight);
 
-    _kneeAngle = angle;
+    _kneeAngle = kneeAngle;
 
-    if (angle == null ||
+    if (kneeAngle == null ||
         hipL == null ||
         hipR == null ||
         shoulderL == null ||
@@ -254,34 +265,60 @@ class _SquatsState extends State<Squats> {
       return;
     }
 
-    // Torso lean
-    final avgShoulder = Offset(
+    // Hip level balance
+    (hipL.y - hipR.y).abs();
+
+    // Map camera coordinates to math coordinates (Y-up)
+    Offset mapYUp(Offset p) => Offset(p.dx, _imageHeight! - p.dy);
+
+    final midShoulder = Offset(
       (shoulderL.x + shoulderR.x) / 2,
       (shoulderL.y + shoulderR.y) / 2,
     );
-    final avgHip = Offset((hipL.x + hipR.x) / 2, (hipL.y + hipR.y) / 2);
-    final torsoVec = avgShoulder - avgHip;
-    final torsoAngle =
-        (180 / math.pi) * math.atan2(torsoVec.dx.abs(), torsoVec.dy.abs());
-    _torsoAngle = torsoAngle;
+    final midHip = Offset((hipL.x + hipR.x) / 2, (hipL.y + hipR.y) / 2);
 
-    // Hip level balance
-    final hipDiff = (hipL.y - hipR.y).abs();
-    final hipLevelOk =
-        (_imageHeight != null && _imageHeight! > 0)
-            ? hipDiff / _imageHeight! < maxHipLevelRatio
-            : true;
+    final shoulderFlipped = mapYUp(midShoulder);
+    final hipFlipped = mapYUp(midHip);
 
-    final torsoOk = torsoAngle < maxTorsoLeanDeg;
-    _postureGood = torsoOk && hipLevelOk;
-    _postureStatus = _postureGood ? 'Correct Posture' : 'Incorrect Posture';
+    final torsoVec = shoulderFlipped - hipFlipped;
+
+    if (torsoVec.distance > 0) {
+      // vertical = straight up
+      final vertical = const Offset(0, 1);
+
+      final torsoNorm = torsoVec / torsoVec.distance;
+      double dot = (torsoNorm.dx * vertical.dx + torsoNorm.dy * vertical.dy)
+          .clamp(-1.0, 1.0);
+
+      // Angle to vertical (upright ≈ 0°)
+      final angleToVertical = math.acos(dot) * 180 / math.pi;
+
+      // Display/logic as angle from horizontal, unsigned (upright ≈ 90°)
+      _torsoAngle = (90 - angleToVertical).abs();
+
+      // Posture check: allow up to maxTorsoLeanDeg from upright (90°)
+      // e.g., with 25°, any torsoAngle >= 65° is considered good
+      final torsoOk = _torsoAngle! >= (90 - maxTorsoLeanDeg);
+
+      final hipDiff = (hipL.y - hipR.y).abs();
+      final hipLevelOk =
+          (_imageHeight != null && _imageHeight! > 0)
+              ? hipDiff / _imageHeight! < maxHipLevelRatio
+              : true;
+      _postureGood = torsoOk && hipLevelOk;
+      _postureStatus = _postureGood ? 'Correct Posture' : 'Incorrect Posture';
+    } else {
+      _torsoAngle = null; // no reliable torso, hide value
+      _postureGood = false;
+      _postureStatus = 'Tracking...';
+    }
 
     // Depth percent (170 -> 90 mapped to 0..1)
-    final clamped = (170 - angle).clamp(0, 80);
+    final clamped = (170 - kneeAngle).clamp(0, 80);
     _depthPercent = (clamped / 80).clamp(0, 1);
 
     // Rep state machine
-    if (!_inRep && angle < standingAngleThreshold - 10) {
+    if (!_inRep && kneeAngle < standingAngleThreshold - 10) {
       _inRep = true;
       _bottomReached = false;
       _repPostureGood = _postureGood;
@@ -290,11 +327,11 @@ class _SquatsState extends State<Squats> {
     if (_inRep) {
       _repPostureGood &= _postureGood;
 
-      if (!_bottomReached && angle <= bottomAngleThreshold) {
+      if (!_bottomReached && kneeAngle <= bottomAngleThreshold) {
         _bottomReached = true;
       }
 
-      if (_bottomReached && angle >= standingAngleThreshold) {
+      if (_bottomReached && kneeAngle >= standingAngleThreshold) {
         if (_repPostureGood) {
           _squatReps += 1;
           _feedback = 'Good rep!';
@@ -303,13 +340,14 @@ class _SquatsState extends State<Squats> {
         }
         _inRep = false;
       } else {
-        if (angle > 150) {
+        // Feedback guidance
+        if (kneeAngle > 150) {
           _feedback = 'Start descent';
-        } else if (angle > 130) {
+        } else if (kneeAngle > 130) {
           _feedback = 'Sit hips back';
-        } else if (angle > 110) {
+        } else if (kneeAngle > 110) {
           _feedback = 'Go deeper';
-        } else if (angle > deepAngle) {
+        } else if (kneeAngle > deepAngle) {
           _feedback = 'Almost there';
         } else {
           _feedback = _postureGood ? 'Hold depth' : 'Adjust posture';

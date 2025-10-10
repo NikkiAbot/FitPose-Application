@@ -14,7 +14,7 @@ class BicepCurl extends StatefulWidget {
 }
 
 class _BicepCurlState extends State<BicepCurl> {
-  bool _showCamera = true;
+  final _showCamera = true;
   late final PoseDetector _poseDetector = PoseDetector(
     options: PoseDetectorOptions(mode: PoseDetectionMode.stream),
   );

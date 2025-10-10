@@ -48,7 +48,7 @@ dependencies:
   path: ^1.9.0
   google_mlkit_pose_detection: ^0.14.0
   collection: ^1.18.0 # For Listqueue
-  onnxruntime: ^1.4.1 # For KNN onnx
+  onnxruntime: ^1.4.1
 
 dev_dependencies:
   flutter_test:

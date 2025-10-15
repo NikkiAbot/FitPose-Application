@@ -11,11 +11,20 @@ class CameraWidget extends StatefulWidget {
   )?
   onImage;
 
+  // New: configurable capture settings
+  final ResolutionPreset resolution;
+  final ImageFormatGroup imageFormat;
+  // New: throttle frames before invoking onImage (e.g., 15)
+  final int maxFps;
+
   const CameraWidget({
     super.key,
     required this.showCamera,
     this.onToggleCamera,
     this.onImage,
+    this.resolution = ResolutionPreset.low, // was medium
+    this.imageFormat = ImageFormatGroup.yuv420, // was nv21
+    this.maxFps = 15, // drop frames to ~15 FPS
   });
 
   @override
@@ -28,6 +37,8 @@ class _CameraWidgetState extends State<CameraWidget> {
   bool _init = false;
   int _rotationDegrees = 0;
   bool _isFrontCamera = false;
+
+  int _lastYieldMs = 0;
 
   @override
   void initState() {
@@ -45,27 +56,77 @@ class _CameraWidgetState extends State<CameraWidget> {
 
     _controller = CameraController(
       front,
-      ResolutionPreset.medium,
+      widget.resolution,
       enableAudio: false,
-      imageFormatGroup: ImageFormatGroup.nv21,
+      imageFormatGroup: widget.imageFormat,
     );
     await _controller!.initialize();
     _rotationDegrees = _controller!.description.sensorOrientation;
 
-    if (widget.onImage != null && !_controller!.value.isStreamingImages) {
-      await _controller!.startImageStream((frame) {
-        widget.onImage?.call(frame, _rotationDegrees, _isFrontCamera);
-      });
+    if (mounted) setState(() => _init = true);
+
+    await _maybeStartStream();
+  }
+
+  Future<void> _maybeStartStream() async {
+    if (!widget.showCamera || widget.onImage == null) return;
+    if (_controller == null || !_controller!.value.isInitialized) return;
+    if (_controller!.value.isStreamingImages) return;
+
+    // Reset throttle on (re)start
+    _lastYieldMs = 0;
+
+    await _controller!.startImageStream((frame) {
+      // Throttle frames before sending to onImage
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final minIntervalMs = (1000 / widget.maxFps).floor();
+      if (_lastYieldMs != 0 && now - _lastYieldMs < minIntervalMs) return;
+
+      _lastYieldMs = now;
+      widget.onImage?.call(frame, _rotationDegrees, _isFrontCamera);
+    });
+  }
+
+  Future<void> _stopStream() async {
+    if (_controller?.value.isStreamingImages == true) {
+      await _controller?.stopImageStream();
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant CameraWidget oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Start/stop streaming when visibility or callback changes
+    if (oldWidget.showCamera != widget.showCamera ||
+        oldWidget.onImage != widget.onImage ||
+        oldWidget.maxFps != widget.maxFps) {
+      if (widget.showCamera && widget.onImage != null) {
+        _maybeStartStream();
+      } else {
+        _stopStream();
+      }
     }
 
-    if (mounted) setState(() => _init = true);
+    // If resolution or image format changed, recreate controller
+    final captureChanged =
+        oldWidget.resolution != widget.resolution ||
+        oldWidget.imageFormat != widget.imageFormat;
+    if (captureChanged) {
+      _recreateController();
+    }
+  }
+
+  Future<void> _recreateController() async {
+    await _stopStream();
+    await _controller?.dispose();
+    _init = false;
+    if (mounted) setState(() {});
+    await _initCamera();
   }
 
   @override
   void dispose() {
-    if (_controller?.value.isStreamingImages == true) {
-      _controller?.stopImageStream();
-    }
+    _stopStream();
     _controller?.dispose();
     super.dispose();
   }

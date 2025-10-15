@@ -1,8 +1,13 @@
+import 'dart:convert';
+import 'dart:io' show Platform;
 import 'dart:math' as math;
-import 'package:flutter/material.dart';
+
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show rootBundle;
 import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
+import 'package:onnxruntime/onnxruntime.dart';
 
 import '../../components/camera_widget.dart';
 
@@ -14,39 +19,42 @@ class BicepCurl extends StatefulWidget {
 }
 
 class _BicepCurlState extends State<BicepCurl> {
-  final _showCamera = true;
+  final bool _showCamera = true;
+
+  // ML Kit pose detector
   late final PoseDetector _poseDetector = PoseDetector(
     options: PoseDetectorOptions(mode: PoseDetectionMode.stream),
   );
 
+  // ONNX runtime
+  OrtSession? _session;
+  List<String> _labels = [];
+
+  // Processing control
   bool _isProcessing = false;
   int _lastProcessMs = 0;
+  static const int _procIntervalMs = 100; // ~10 FPS
 
+  // Latest pose & image dims
   Pose? _latestPose;
   int? _imageWidth;
   int? _imageHeight;
 
-  double? _elbowAngle;
-  double? _torsoAngle;
-  String _feedback = 'Face camera and start';
-  String _postureStatus = 'Tracking...';
-  bool _postureGood = false;
+  // Rotation from camera
+  InputImageRotation _lastRotation = InputImageRotation.rotation0deg;
 
-  int _curlReps = 0;
-  bool _inRep = false;
-  bool _fullyContracted = false;
-  bool _repPostureGood = true;
+  // Feature histories
+  final List<double> _elbowAngleHistory = [];
+  final List<double> _elbowYHistory = [];
+  static const int _historyMax = 16;
 
-  static const double extendedAngleThreshold = 160;
-  static const double contractedAngleThreshold = 60;
-  static const double deepContractAngle = 50;
-  static const double maxTorsoLeanDeg = 20;
-
-  InputImageRotation _rotation = InputImageRotation.rotation270deg;
+  // UI
+  String _feedback = 'Loading model...';
 
   @override
   void initState() {
     super.initState();
+    _loadModelAndLabels();
     WidgetsBinding.instance.addPostFrameCallback(
       (_) => _showInstructionsDialog(),
     );
@@ -55,21 +63,50 @@ class _BicepCurlState extends State<BicepCurl> {
   @override
   void dispose() {
     _poseDetector.close();
+    try {
+      _session?.release();
+    } catch (_) {}
     super.dispose();
   }
 
+  Future<void> _loadModelAndLabels() async {
+    try {
+      final rawModel = await rootBundle.load('assets/form_knn.onnx');
+
+      // Create session without unsupported optimization APIs
+      final modelBytes = rawModel.buffer.asUint8List();
+      try {
+        final opts = OrtSessionOptions();
+        _session = OrtSession.fromBuffer(modelBytes, opts);
+      } catch (_) {
+        // Fallback if options ctor is not supported
+        final fallbackOpts = OrtSessionOptions();
+        _session = OrtSession.fromBuffer(modelBytes, fallbackOpts);
+      }
+
+      final labelData = await rootBundle.loadString('assets/form_labels.json');
+      _labels = List<String>.from(jsonDecode(labelData));
+
+      if (kDebugMode) debugPrint('[ONNX] Model and labels loaded.');
+      setState(() => _feedback = 'Ready — perform curls');
+    } catch (e) {
+      if (kDebugMode) debugPrint('[ONNX] Load failed: $e');
+      setState(() => _feedback = 'Model load failed');
+    }
+  }
+
+  // CameraWidget callback
   void _onCameraImage(
     CameraImage image,
     int rotationDegrees,
     bool isFrontCamera,
   ) {
     final now = DateTime.now().millisecondsSinceEpoch;
-    if (_isProcessing || now - _lastProcessMs < 120) return;
+    if (_isProcessing || now - _lastProcessMs < _procIntervalMs) return;
     _isProcessing = true;
     _lastProcessMs = now;
 
-    // ✅ Lock rotation for portrait orientation (front camera)
-    _rotation = InputImageRotation.rotation270deg;
+    _lastRotation = _toImageRotation(rotationDegrees);
 
     _processPose(image).whenComplete(() {
       _isProcessing = false;
@@ -77,19 +114,49 @@ class _BicepCurlState extends State<BicepCurl> {
     });
   }
 
+  InputImageRotation _toImageRotation(int deg) {
+    switch (deg % 360) {
+      case 0:
+        return InputImageRotation.rotation0deg;
+      case 90:
+        return InputImageRotation.rotation90deg;
+      case 180:
+        return InputImageRotation.rotation180deg;
+      case 270:
+        return InputImageRotation.rotation270deg;
+      default:
+        return InputImageRotation.rotation0deg;
+    }
+  }
+
   Future<void> _processPose(CameraImage image) async {
     try {
       _imageWidth ??= image.width;
       _imageHeight ??= image.height;
 
-      final nv21 = _yuv420ToNv21(image);
+      late final Uint8List bytes;
+      late final InputImageFormat fmt;
+      late final int bytesPerRow;
+
+      if (Platform.isIOS) {
+        // iOS: BGRA8888 in plane 0
+        bytes = image.planes[0].bytes;
+        fmt = InputImageFormat.bgra8888;
+        bytesPerRow = image.planes[0].bytesPerRow;
+      } else {
+        // Android: YUV420_888 → NV21 for ML Kit
+        bytes = _yuv420ToNv21(image);
+        fmt = InputImageFormat.nv21;
+        bytesPerRow = image.planes.first.bytesPerRow; // Y stride
+      }
+
       final inputImage = InputImage.fromBytes(
-        bytes: nv21,
+        bytes: bytes,
         metadata: InputImageMetadata(
           size: Size(image.width.toDouble(), image.height.toDouble()),
-          rotation: _rotation,
-          format: InputImageFormat.nv21,
-          bytesPerRow: image.planes.first.bytesPerRow,
+          rotation: _lastRotation,
+          format: fmt,
+          bytesPerRow: bytesPerRow,
         ),
       );
 
@@ -97,66 +164,64 @@ class _BicepCurlState extends State<BicepCurl> {
       if (poses.isEmpty) {
         _latestPose = null;
         _feedback = 'No pose detected';
-        _postureStatus = 'Tracking...';
-        _postureGood = false;
+        _elbowAngleHistory.clear();
+        _elbowYHistory.clear();
         return;
       }
 
       _latestPose = poses.first;
-      _analyzePose(_latestPose!);
+      await _extractFeaturesAndRunModel(_latestPose!);
     } catch (e) {
-      if (kDebugMode) print('[Pose] Exception: $e');
+      if (kDebugMode) debugPrint('[Pose] Exception: $e');
       _latestPose = null;
       _feedback = 'Error processing frame';
-      _postureStatus = 'Tracking...';
-      _postureGood = false;
+      _elbowAngleHistory.clear();
+      _elbowYHistory.clear();
     }
   }
 
-  // RULES
+  // Convert YUV420 3-plane -> NV21 (Android)
   Uint8List _yuv420ToNv21(CameraImage image) {
     final width = image.width;
     final height = image.height;
-    final ySize = width * height;
-    final chromaWidth = width ~/ 2;
-    final chromaHeight = height ~/ 2;
-    final chromaSize = chromaWidth * chromaHeight;
-    final out = Uint8List(ySize + 2 * chromaSize);
 
     final yPlane = image.planes[0];
     final uPlane = image.planes[1];
     final vPlane = image.planes[2];
 
+    final ySize = width * height;
+    final out = Uint8List(ySize + (ySize ~/ 2));
+
+    // Copy Y with row stride
     int outIndex = 0;
+    final yRowStride = yPlane.bytesPerRow;
     for (int row = 0; row < height; row++) {
-      out.setRange(
-        outIndex,
-        outIndex + width,
-        yPlane.bytes,
-        row * yPlane.bytesPerRow,
-      );
+      out.setRange(outIndex, outIndex + width, yPlane.bytes, row * yRowStride);
       outIndex += width;
     }
 
-    int chromaOut = ySize;
+    // Interleave VU
+    final chromaWidth = width ~/ 2;
+    final chromaHeight = height ~/ 2;
+    final uRowStride = uPlane.bytesPerRow;
+    final vRowStride = vPlane.bytesPerRow;
+    final uPixelStride = uPlane.bytesPerPixel ?? 1;
+    final vPixelStride = vPlane.bytesPerPixel ?? 1;
+
+    int uvOut = ySize;
     for (int row = 0; row < chromaHeight; row++) {
       for (int col = 0; col < chromaWidth; col++) {
-        final uIndex =
-            row * uPlane.bytesPerRow + col * (uPlane.bytesPerPixel ?? 1);
-        final vIndex =
-            row * vPlane.bytesPerRow + col * (vPlane.bytesPerPixel ?? 1);
-        out[chromaOut++] = vPlane.bytes[vIndex];
-        out[chromaOut++] = uPlane.bytes[uIndex];
+        final uIndex = row * uRowStride + col * uPixelStride;
+        final vIndex = row * vRowStride + col * vPixelStride;
+        out[uvOut++] = vPlane.bytes[vIndex]; // V
+        out[uvOut++] = uPlane.bytes[uIndex]; // U
       }
     }
     return out;
   }
 
-  double _angle(Offset a, Offset b, Offset c) {
-    a = Offset(a.dx, -a.dy);
-    b = Offset(b.dx, -b.dy);
-    c = Offset(c.dx, -c.dy);
-
+  // Angle in degrees at b for a-b-c
+  double _angleDeg(Offset a, Offset b, Offset c) {
     final ab = a - b;
     final cb = c - b;
     final dot = ab.dx * cb.dx + ab.dy * cb.dy;
@@ -164,79 +229,164 @@ class _BicepCurlState extends State<BicepCurl> {
     if (denom == 0) return 0;
     final cosv = (dot / denom).clamp(-1.0, 1.0);
     return (180 / math.pi) * math.acos(cosv);
+    // Note: ML Kit coordinates are image-space; no Y flip needed for feature consistency.
   }
 
-  void _analyzePose(Pose pose) {
+  Future<void> _extractFeaturesAndRunModel(Pose pose) async {
     final lm = pose.landmarks;
+
     final shoulderR = lm[PoseLandmarkType.rightShoulder];
     final elbowR = lm[PoseLandmarkType.rightElbow];
     final wristR = lm[PoseLandmarkType.rightWrist];
     final hipR = lm[PoseLandmarkType.rightHip];
+
     final shoulderL = lm[PoseLandmarkType.leftShoulder];
     final hipL = lm[PoseLandmarkType.leftHip];
 
-    if (shoulderR == null || elbowR == null || wristR == null || hipR == null) {
+    if (shoulderR == null || elbowR == null || wristR == null) {
       _feedback = 'Move into view';
-      _postureStatus = 'Tracking...';
-      _postureGood = false;
       return;
     }
 
-    _elbowAngle = _angle(
+    final imgW = (_imageWidth ?? 1).toDouble();
+    final imgH = (_imageHeight ?? 1).toDouble();
+
+    // 1) Elbow angle (deg)
+    final elbowAng = _angleDeg(
       Offset(shoulderR.x, shoulderR.y),
       Offset(elbowR.x, elbowR.y),
       Offset(wristR.x, wristR.y),
     );
 
-    if (shoulderL != null && hipL != null) {
+    // 2) Elbow dx (normalized)
+    final elbowDx = (elbowR.x - shoulderR.x) / imgW;
+
+    // 3) Torso inclination (deg)
+    double torsoIncl = 0;
+    if (shoulderL != null && hipL != null && hipR != null) {
       final avgShoulder = Offset(
         (shoulderL.x + shoulderR.x) / 2,
         (shoulderL.y + shoulderR.y) / 2,
       );
       final avgHip = Offset((hipL.x + hipR.x) / 2, (hipL.y + hipR.y) / 2);
-      final torsoVec = avgShoulder - avgHip;
-      _torsoAngle =
-          (180 / math.pi) * math.atan2(torsoVec.dx.abs(), torsoVec.dy.abs());
-      _postureGood = _torsoAngle! < maxTorsoLeanDeg;
-      _postureStatus = _postureGood ? 'Good Posture' : 'Don’t lean forward';
+      final vec = avgShoulder - avgHip;
+      torsoIncl = (180 / math.pi) * math.atan2(vec.dx.abs(), vec.dy.abs());
+    } else if (hipR != null) {
+      final vec = Offset(shoulderR.x - hipR.x, shoulderR.y - hipR.y);
+      torsoIncl = (180 / math.pi) * math.atan2(vec.dx.abs(), vec.dy.abs());
     }
 
-    (180 - _elbowAngle!).clamp(0, 140);
+    // 4) Elbow vel (normalized Y delta)
+    final currElbowY = elbowR.y;
+    double elbowVel = 0;
+    if (_elbowYHistory.isNotEmpty) {
+      final lastY = _elbowYHistory.last;
+      elbowVel = (currElbowY - lastY) / imgH;
+    }
+    _elbowYHistory.add(currElbowY);
+    if (_elbowYHistory.length > _historyMax) _elbowYHistory.removeAt(0);
 
-    if (!_inRep && _elbowAngle! < extendedAngleThreshold - 10) {
-      _inRep = true;
-      _fullyContracted = false;
-      _repPostureGood = _postureGood;
+    // History for ROM/consistency
+    _elbowAngleHistory.add(elbowAng);
+    if (_elbowAngleHistory.length > _historyMax) _elbowAngleHistory.removeAt(0);
+
+    // 5) Wrist height (0..1)
+    final wristHeight = wristR.y / imgH;
+
+    // 6) Movement consistency (0..1)
+    double movementConsistency = 0.5;
+    if (_elbowAngleHistory.length >= 3) {
+      final mean =
+          _elbowAngleHistory.reduce((a, b) => a + b) /
+          _elbowAngleHistory.length;
+      double variance = 0;
+      for (final v in _elbowAngleHistory) {
+        variance += (v - mean) * (v - mean);
+      }
+      variance /= _elbowAngleHistory.length;
+      movementConsistency = 1.0 / (1.0 + variance);
     }
 
-    if (_inRep) {
-      _repPostureGood &= _postureGood;
+    // 7) ROM (0..1)
+    double rom = 0.0;
+    if (_elbowAngleHistory.isNotEmpty) {
+      final maxA = _elbowAngleHistory.reduce(math.max);
+      final minA = _elbowAngleHistory.reduce(math.min);
+      rom = (maxA - minA) / 180.0;
+    }
 
-      if (!_fullyContracted && _elbowAngle! <= contractedAngleThreshold) {
-        _fullyContracted = true;
+    final features = <double>[
+      elbowAng,
+      elbowDx,
+      torsoIncl,
+      elbowVel,
+      wristHeight,
+      movementConsistency,
+      rom,
+    ];
+
+    final prediction = await _runOnnx(features);
+    _feedback = prediction;
+  }
+
+  Future<String> _runOnnx(List<double> features) async {
+    final session = _session;
+    if (session == null) return 'Model not ready';
+    if (_labels.isEmpty) return 'Loading labels...';
+
+    OrtValueTensor? input;
+    List<OrtValue?> outputs = const [];
+    try {
+      input = OrtValueTensor.createTensorWithDataList(
+        Float32List.fromList(features),
+        [1, features.length],
+      );
+
+      // Adjust input name if needed (e.g., 'input', 'input_0')
+      outputs = session.run(OrtRunOptions(), {'X': input});
+      if (outputs.isEmpty) return 'No output';
+
+      final raw = outputs.first?.value; // null-safe access
+      if (raw == null) return 'No output value';
+
+      // Case: probs [[p1, p2, ...]]
+      if (raw is List && raw.isNotEmpty && raw.first is List) {
+        final probs = List<double>.from(
+          (raw.first as List).map((e) => (e as num).toDouble()),
+        );
+        final maxVal = probs.reduce(math.max);
+        final maxIdx = probs.indexOf(maxVal);
+        return _labels[maxIdx.clamp(0, _labels.length - 1)];
       }
 
-      if (_fullyContracted && _elbowAngle! >= extendedAngleThreshold) {
-        if (_repPostureGood) {
-          _curlReps += 1;
-          _feedback = 'Nice curl!';
+      // Case: [idx] or [0,1,0,...]
+      if (raw is List && raw.isNotEmpty) {
+        final first = raw.first;
+        int idx;
+        if (first is int) {
+          idx = first;
+        } else if (first is double) {
+          idx = first.toInt();
         } else {
-          _feedback = 'Keep torso stable!';
+          return 'Invalid output';
         }
-        _inRep = false;
-      } else {
-        if (_elbowAngle! > 150) {
-          _feedback = 'Start curling';
-        } else if (_elbowAngle! > 100) {
-          _feedback = 'Keep curling';
-        } else if (_elbowAngle! > deepContractAngle) {
-          _feedback = 'Almost there!';
-        } else {
-          _feedback = _postureGood ? 'Hold contraction' : 'Don’t swing!';
-        }
+        return _labels[idx.clamp(0, _labels.length - 1)];
       }
-    } else {
-      _feedback = 'Start curling';
+
+      return 'Unknown';
+    } catch (e) {
+      if (kDebugMode) debugPrint('[ONNX] Inference error: $e');
+      return 'Inference error';
+    } finally {
+      // Release native resources
+      try {
+        input?.release();
+      } catch (_) {}
+      for (final o in outputs) {
+        try {
+          o?.release();
+        } catch (_) {}
+      }
     }
   }
 
@@ -258,12 +408,10 @@ class _BicepCurlState extends State<BicepCurl> {
             ),
             content: const SingleChildScrollView(
               child: Text(
-                '1. Stand straight, hold imaginary dumbbells\n'
-                '2. Keep your elbows close to your torso\n'
-                '3. Curl your forearm up to shoulder height\n'
-                '4. Lower down slowly\n'
-                '5. Avoid swinging or leaning\n\n'
-                'Camera will guide your reps and form.',
+                '1) Face the camera and perform bicep curls\n'
+                '2) Keep your upper arms still\n'
+                '3) Avoid swinging or leaning\n\n'
+                'The model will classify your form in real-time.',
                 style: TextStyle(fontSize: 14, height: 1.5),
               ),
             ),
@@ -283,7 +431,8 @@ class _BicepCurlState extends State<BicepCurl> {
 
   @override
   Widget build(BuildContext context) {
-    final hudColor = _postureGood ? Colors.green : Colors.redAccent;
+    final hudColor = _feedback == 'good' ? Colors.green : Colors.orangeAccent;
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Bicep Curl'),
@@ -303,24 +452,14 @@ class _BicepCurlState extends State<BicepCurl> {
                   CameraWidget(
                     showCamera: _showCamera,
                     onImage: _onCameraImage,
+                    // Lower resolution + drop frames at source to reduce lag
+                    resolution: ResolutionPreset.low,
+                    imageFormat:
+                        Platform.isIOS
+                            ? ImageFormatGroup.bgra8888
+                            : ImageFormatGroup.yuv420,
+                    maxFps: 12, // 10–15 recommended with ONNX
                   ),
-                  if (_latestPose != null &&
-                      _imageWidth != null &&
-                      _imageHeight != null)
-                    Positioned.fill(
-                      child: CustomPaint(
-                        painter: _BicepCurlPainter(
-                          pose: _latestPose!,
-                          imageWidth: _imageWidth!,
-                          imageHeight: _imageHeight!,
-                          elbowAngle: _elbowAngle,
-                          torsoAngle: _torsoAngle,
-                          postureGood: _postureGood,
-                          rotation: _rotation,
-                          mirror: true,
-                        ),
-                      ),
-                    ),
                   Positioned(
                     top: 16,
                     left: 16,
@@ -338,34 +477,18 @@ class _BicepCurlState extends State<BicepCurl> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              'Reps: $_curlReps',
+                              'Form: $_feedback',
                               style: const TextStyle(
+                                fontSize: 18,
                                 fontWeight: FontWeight.bold,
                               ),
                             ),
-                            if (_elbowAngle != null)
-                              Text(
-                                'Elbow: ${_elbowAngle!.toStringAsFixed(0)}°',
-                              ),
-                            if (_torsoAngle != null)
-                              Text(
-                                'Torso: ${_torsoAngle!.toStringAsFixed(0)}°',
-                              ),
-                            Text(
-                              _postureStatus,
+                            const SizedBox(height: 6),
+                            const Text(
+                              'Labels: good, half_rep, lean, swing',
                               style: TextStyle(
-                                color: hudColor,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                            const SizedBox(height: 4),
-                            Text(
-                              _feedback,
-                              style: TextStyle(
-                                color:
-                                    _postureGood
-                                        ? Colors.greenAccent
-                                        : Colors.orangeAccent,
+                                color: Colors.grey,
+                                fontSize: 13,
                               ),
                             ),
                           ],
@@ -378,112 +501,4 @@ class _BicepCurlState extends State<BicepCurl> {
               : const Center(child: Text('Camera off')),
     );
   }
-}
-
-class _BicepCurlPainter extends CustomPainter {
-  final Pose pose;
-  final int imageWidth;
-  final int imageHeight;
-  final double? elbowAngle;
-  final double? torsoAngle;
-  final bool postureGood;
-  final InputImageRotation rotation;
-  final bool mirror;
-
-  _BicepCurlPainter({
-    required this.pose,
-    required this.imageWidth,
-    required this.imageHeight,
-    required this.elbowAngle,
-    required this.torsoAngle,
-    required this.postureGood,
-    required this.rotation,
-    required this.mirror,
-  });
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    canvas.save();
-
-    final rotated =
-        rotation == InputImageRotation.rotation90deg ||
-        rotation == InputImageRotation.rotation270deg;
-    final effW = rotated ? imageHeight : imageWidth;
-    final effH = rotated ? imageWidth : imageHeight;
-
-    // ✅ Scale calculations
-    final scaleX = size.width / effW;
-    final scaleY = size.height / effH;
-
-    // ✅ Correct mapping: no mirror on X, flip Y vertically
-    Offset mapPoint(double x, double y) {
-      final newX = size.width - (x * scaleX);
-      final newY = y * scaleY;
-      return Offset(newX, newY);
-    }
-
-    final lm = pose.landmarks;
-
-    final connections = [
-      [PoseLandmarkType.leftShoulder, PoseLandmarkType.rightShoulder],
-      [PoseLandmarkType.leftHip, PoseLandmarkType.rightHip],
-      [PoseLandmarkType.leftShoulder, PoseLandmarkType.leftElbow],
-      [PoseLandmarkType.leftElbow, PoseLandmarkType.leftWrist],
-      [PoseLandmarkType.rightShoulder, PoseLandmarkType.rightElbow],
-      [PoseLandmarkType.rightElbow, PoseLandmarkType.rightWrist],
-      [PoseLandmarkType.leftShoulder, PoseLandmarkType.leftHip],
-      [PoseLandmarkType.rightShoulder, PoseLandmarkType.rightHip],
-    ];
-
-    final linePaint =
-        Paint()
-          ..color = Colors.white
-          ..strokeWidth = 2
-          ..style = PaintingStyle.stroke
-          ..strokeCap = StrokeCap.round;
-
-    final jointPaint =
-        Paint()
-          ..color = postureGood ? Colors.greenAccent : Colors.redAccent
-          ..style = PaintingStyle.fill;
-
-    // ✅ Draw skeleton lines
-    for (final pair in connections) {
-      final a = lm[pair[0]];
-      final b = lm[pair[1]];
-      if (a == null || b == null) continue;
-      canvas.drawLine(mapPoint(a.x, a.y), mapPoint(b.x, b.y), linePaint);
-    }
-
-    // ✅ Draw joints
-    for (final l in lm.values) {
-      canvas.drawCircle(mapPoint(l.x, l.y), 6, jointPaint);
-    }
-
-    // ✅ Draw elbow angle text
-    final elbow = lm[PoseLandmarkType.rightElbow];
-    if (elbowAngle != null && elbow != null) {
-      final tp = TextPainter(
-        text: TextSpan(
-          text: '${elbowAngle!.toStringAsFixed(0)}°',
-          style: const TextStyle(
-            color: Colors.yellowAccent,
-            fontSize: 14,
-            fontWeight: FontWeight.bold,
-            shadows: [Shadow(color: Colors.black, blurRadius: 4)],
-          ),
-        ),
-        textDirection: TextDirection.ltr,
-      )..layout();
-      tp.paint(canvas, mapPoint(elbow.x, elbow.y) + const Offset(8, -20));
-    }
-
-    canvas.restore();
-  }
-
-  @override
-  bool shouldRepaint(covariant _BicepCurlPainter old) =>
-      old.pose != pose ||
-      old.elbowAngle != elbowAngle ||
-      old.postureGood != postureGood;
 }

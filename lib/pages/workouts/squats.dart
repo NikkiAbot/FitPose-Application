@@ -4,7 +4,7 @@ import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
 
-import '../../components/camera_widget.dart';
+import '../../../components/camera_widget.dart';
 
 class Squats extends StatefulWidget {
   const Squats({super.key});
@@ -14,51 +14,40 @@ class Squats extends StatefulWidget {
 }
 
 class _SquatsState extends State<Squats> {
-  bool _showCamera = true;
+  final _showCamera = true;
 
-  // Pose detector
   late final PoseDetector _poseDetector = PoseDetector(
     options: PoseDetectorOptions(mode: PoseDetectionMode.stream),
   );
 
-  // Frame processing control
   bool _isProcessing = false;
   int _lastProcessMs = 0;
 
-  // Raw pose
   Pose? _latestPose;
-
-  // Image size (for scaling)
   int? _imageWidth;
   int? _imageHeight;
 
   // Metrics
-  double? _kneeAngle;
+  double? _leftKnee;
+  double? _rightKnee;
+  double? _avgKnee;
   double? _torsoAngle;
-  double? _depthPercent;
-  String _feedback = 'Face camera at 45° and start';
+  String _feedback = 'Face the camera and stand tall';
   String _postureStatus = 'Tracking...';
   bool _postureGood = false;
 
-  // Rep logic
-  int _squatReps = 0;
-  bool _inRep = false;
-  bool _bottomReached = false;
-  bool _repPostureGood = true;
+  // FSM
+  int _reps = 0;
+  String _state = 'waiting'; // waiting | down | up
+  bool _anomaly = false;
 
-  // Thresholds
-  static const double standingAngleThreshold = 165;
-  static const double bottomAngleThreshold =
-      80; // was 100; require ≤80° at bottom
-  static const double deepAngle =
-      80; // was 95; align guidance with target depth
-  static const double maxTorsoLeanDeg = 25;
-  static const double maxHipLevelRatio = 0.05;
+  // Thresholds (tweak as needed)
+  static const double downThresh = 90; // knees bent
+  static const double upThresh = 160; // standing tall
+  static const double maxTorsoLeanDeg = 20; // posture tolerance
+  static const double maxAsymmetryDeg = 15; // knees diff
 
-  // Rotation assumption
-  InputImageRotation _rotation = InputImageRotation.rotation0deg;
-
-  int _consecutiveFail = 0;
+  InputImageRotation _rotation = InputImageRotation.rotation270deg;
 
   @override
   void initState() {
@@ -74,7 +63,6 @@ class _SquatsState extends State<Squats> {
     super.dispose();
   }
 
-  // Camera image callback
   void _onCameraImage(
     CameraImage image,
     int rotationDegrees,
@@ -84,6 +72,8 @@ class _SquatsState extends State<Squats> {
     if (_isProcessing || now - _lastProcessMs < 120) return;
     _isProcessing = true;
     _lastProcessMs = now;
+
+    _rotation = InputImageRotation.rotation270deg;
 
     _processPose(image).whenComplete(() {
       _isProcessing = false;
@@ -96,9 +86,7 @@ class _SquatsState extends State<Squats> {
       _imageWidth ??= image.width;
       _imageHeight ??= image.height;
 
-      // Build NV21 buffer from 3-plane YUV420
       final nv21 = _yuv420ToNv21(image);
-
       final inputImage = InputImage.fromBytes(
         bytes: nv21,
         metadata: InputImageMetadata(
@@ -110,102 +98,67 @@ class _SquatsState extends State<Squats> {
       );
 
       final poses = await _poseDetector.processImage(inputImage);
-
-      if (kDebugMode) {
-        print(
-          '[Pose] poses=${poses.length} rot=$_rotation fail=$_consecutiveFail nv21=${nv21.length}',
-        );
-      }
-
       if (poses.isEmpty) {
-        _consecutiveFail++;
-        if (_consecutiveFail == 8) {
-          final next =
-              _rotation == InputImageRotation.rotation0deg
-                  ? InputImageRotation.rotation270deg
-                  : (_rotation == InputImageRotation.rotation270deg
-                      ? InputImageRotation.rotation90deg
-                      : InputImageRotation.rotation0deg);
-          if (kDebugMode) {
-            print('[Pose] rotation fallback $_rotation -> $next');
-          }
-          _rotation = next;
-          _consecutiveFail = 0;
-        }
-
-        // Clear state to avoid HUD/painter glitches and stuck rep state
         _latestPose = null;
-        _kneeAngle = null;
-        _torsoAngle = null;
-        _depthPercent = null;
-        _inRep = false;
-        _bottomReached = false;
-        _repPostureGood = true;
-
         _feedback = 'No pose detected';
         _postureStatus = 'Tracking...';
         _postureGood = false;
         return;
       }
 
-      _consecutiveFail = 0;
       _latestPose = poses.first;
       _analyzePose(_latestPose!);
     } catch (e) {
-      if (kDebugMode) {
-        print('[Pose] Exception convert: $e');
-      }
+      if (kDebugMode) print('[Squats] Exception: $e');
       _latestPose = null;
-      _feedback = 'Conversion error';
+      _feedback = 'Error processing frame';
       _postureStatus = 'Tracking...';
       _postureGood = false;
     }
   }
 
-  // Convert 3-plane YUV420 (camera) -> NV21 byte array
   Uint8List _yuv420ToNv21(CameraImage image) {
-    final int width = image.width;
-    final int height = image.height;
-    final int ySize = width * height;
-    final int chromaWidth = width ~/ 2;
-    final int chromaHeight = height ~/ 2;
-    final int chromaSize = chromaWidth * chromaHeight;
+    final width = image.width;
+    final height = image.height;
+    final ySize = width * height;
+    final chromaWidth = width ~/ 2;
+    final chromaHeight = height ~/ 2;
+    final chromaSize = chromaWidth * chromaHeight;
     final out = Uint8List(ySize + 2 * chromaSize);
 
-    final Plane yPlane = image.planes[0];
-    final Plane uPlane = image.planes[1];
-    final Plane vPlane = image.planes[2];
+    final yPlane = image.planes[0];
+    final uPlane = image.planes[1];
+    final vPlane = image.planes[2];
 
     int outIndex = 0;
-    final int yRowStride = yPlane.bytesPerRow;
-    final Uint8List yBytes = yPlane.bytes;
     for (int row = 0; row < height; row++) {
-      final int start = row * yRowStride;
-      out.setRange(outIndex, outIndex + width, yBytes, start);
+      out.setRange(
+        outIndex,
+        outIndex + width,
+        yPlane.bytes,
+        row * yPlane.bytesPerRow,
+      );
       outIndex += width;
     }
 
-    final int uRowStride = uPlane.bytesPerRow;
-    final int vRowStride = vPlane.bytesPerRow;
-    final int uPixelStride = uPlane.bytesPerPixel ?? 1;
-    final int vPixelStride = vPlane.bytesPerPixel ?? 1;
-    final Uint8List uBytes = uPlane.bytes;
-    final Uint8List vBytes = vPlane.bytes;
-
     int chromaOut = ySize;
-
     for (int row = 0; row < chromaHeight; row++) {
       for (int col = 0; col < chromaWidth; col++) {
-        final int uIndex = row * uRowStride + col * uPixelStride;
-        final int vIndex = row * vRowStride + col * vPixelStride;
-        out[chromaOut++] = vBytes[vIndex];
-        out[chromaOut++] = uBytes[uIndex];
+        final uIndex =
+            row * uPlane.bytesPerRow + col * (uPlane.bytesPerPixel ?? 1);
+        final vIndex =
+            row * vPlane.bytesPerRow + col * (vPlane.bytesPerPixel ?? 1);
+        out[chromaOut++] = vPlane.bytes[vIndex];
+        out[chromaOut++] = uPlane.bytes[uIndex];
       }
     }
     return out;
   }
 
   double _angle(Offset a, Offset b, Offset c) {
+    a = Offset(a.dx, -a.dy);
+    b = Offset(b.dx, -b.dy);
+    c = Offset(c.dx, -c.dy);
     final ab = a - b;
     final cb = c - b;
     final dot = ab.dx * cb.dx + ab.dy * cb.dy;
@@ -218,143 +171,82 @@ class _SquatsState extends State<Squats> {
   void _analyzePose(Pose pose) {
     final lm = pose.landmarks;
 
-    final hipL = lm[PoseLandmarkType.leftHip];
-    final kneeL = lm[PoseLandmarkType.leftKnee];
-    final ankleL = lm[PoseLandmarkType.leftAnkle];
+    final lh = lm[PoseLandmarkType.leftHip];
+    final rh = lm[PoseLandmarkType.rightHip];
+    final lk = lm[PoseLandmarkType.leftKnee];
+    final rk = lm[PoseLandmarkType.rightKnee];
+    final la = lm[PoseLandmarkType.leftAnkle];
+    final ra = lm[PoseLandmarkType.rightAnkle];
+    final ls = lm[PoseLandmarkType.leftShoulder];
+    final rs = lm[PoseLandmarkType.rightShoulder];
 
-    final hipR = lm[PoseLandmarkType.rightHip];
-    final kneeR = lm[PoseLandmarkType.rightKnee];
-    final ankleR = lm[PoseLandmarkType.rightAnkle];
-
-    final shoulderL = lm[PoseLandmarkType.leftShoulder];
-    final shoulderR = lm[PoseLandmarkType.rightShoulder];
-
-    double? angleLeft;
-    double? angleRight;
-
-    if (hipL != null && kneeL != null && ankleL != null) {
-      angleLeft = _angle(
-        Offset(hipL.x, hipL.y),
-        Offset(kneeL.x, kneeL.y),
-        Offset(ankleL.x, ankleL.y),
-      );
-    }
-    if (hipR != null && kneeR != null && ankleR != null) {
-      angleRight = _angle(
-        Offset(hipR.x, hipR.y),
-        Offset(kneeR.x, kneeR.y),
-        Offset(ankleR.x, ankleR.y),
-      );
-    }
-
-    final kneeAngle =
-        (angleLeft != null && angleRight != null)
-            ? math.min(angleLeft, angleRight)
-            : (angleLeft ?? angleRight);
-
-    _kneeAngle = kneeAngle;
-
-    if (kneeAngle == null ||
-        hipL == null ||
-        hipR == null ||
-        shoulderL == null ||
-        shoulderR == null) {
-      _feedback = 'Move into view';
+    if ([lh, rh, lk, rk, la, ra, ls, rs].any((p) => p == null)) {
+      _feedback = 'Move fully into view';
       _postureStatus = 'Tracking...';
       _postureGood = false;
       return;
     }
 
-    // Hip level balance
-    (hipL.y - hipR.y).abs();
-
-    // Map camera coordinates to math coordinates (Y-up)
-    Offset mapYUp(Offset p) => Offset(p.dx, _imageHeight! - p.dy);
-
-    final midShoulder = Offset(
-      (shoulderL.x + shoulderR.x) / 2,
-      (shoulderL.y + shoulderR.y) / 2,
+    _leftKnee = _angle(
+      Offset(lh!.x, lh.y),
+      Offset(lk!.x, lk.y),
+      Offset(la!.x, la.y),
     );
-    final midHip = Offset((hipL.x + hipR.x) / 2, (hipL.y + hipR.y) / 2);
+    _rightKnee = _angle(
+      Offset(rh!.x, rh.y),
+      Offset(rk!.x, rk.y),
+      Offset(ra!.x, ra.y),
+    );
+    _avgKnee = ((_leftKnee ?? 0) + (_rightKnee ?? 0)) / 2.0;
 
-    final shoulderFlipped = mapYUp(midShoulder);
-    final hipFlipped = mapYUp(midHip);
+    // Torso lean
+    final midSh = Offset((ls!.x + rs!.x) / 2, (ls.y + rs.y) / 2);
+    final midHp = Offset((lh.x + rh.x) / 2, (lh.y + rh.y) / 2);
+    final torsoVec = midSh - midHp;
+    _torsoAngle =
+        (180 / math.pi) * math.atan2(torsoVec.dx.abs(), torsoVec.dy.abs());
 
-    final torsoVec = shoulderFlipped - hipFlipped;
+    // Posture quality
+    final kneesDiff = ((_leftKnee ?? 0) - (_rightKnee ?? 0)).abs();
+    final upright = _torsoAngle! < maxTorsoLeanDeg;
+    final symmetric = kneesDiff < maxAsymmetryDeg;
+    _postureGood = upright && symmetric;
+    _postureStatus =
+        _postureGood
+            ? 'Good posture'
+            : (!upright ? 'Keep chest up' : 'Balance knees evenly');
 
-    if (torsoVec.distance > 0) {
-      // vertical = straight up
-      final vertical = const Offset(0, 1);
-
-      final torsoNorm = torsoVec / torsoVec.distance;
-      double dot = (torsoNorm.dx * vertical.dx + torsoNorm.dy * vertical.dy)
-          .clamp(-1.0, 1.0);
-
-      // Angle to vertical (upright ≈ 0°)
-      final angleToVertical = math.acos(dot) * 180 / math.pi;
-
-      // Display/logic as angle from horizontal, unsigned (upright ≈ 90°)
-      _torsoAngle = (90 - angleToVertical).abs();
-
-      // Posture check: allow up to maxTorsoLeanDeg from upright (90°)
-      // e.g., with 25°, any torsoAngle >= 65° is considered good
-      final torsoOk = _torsoAngle! >= (90 - maxTorsoLeanDeg);
-
-      final hipDiff = (hipL.y - hipR.y).abs();
-      final hipLevelOk =
-          (_imageHeight != null && _imageHeight! > 0)
-              ? hipDiff / _imageHeight! < maxHipLevelRatio
-              : true;
-      _postureGood = torsoOk && hipLevelOk;
-      _postureStatus = _postureGood ? 'Correct Posture' : 'Incorrect Posture';
-    } else {
-      _torsoAngle = null; // no reliable torso, hide value
-      _postureGood = false;
-      _postureStatus = 'Tracking...';
+    // FSM
+    if (_state == 'waiting') {
+      if (_avgKnee! < downThresh) {
+        _state = 'down';
+        _anomaly = false;
+      }
+    } else if (_state == 'down') {
+      if (_avgKnee! > upThresh) {
+        _state = 'up';
+        if (!_postureGood) _anomaly = true;
+      }
+    } else if (_state == 'up') {
+      if (_avgKnee! < downThresh) {
+        if (!_anomaly && _postureGood) {
+          _reps += 1;
+          _feedback = 'Rep ✓';
+        } else {
+          _feedback = 'Fix form for clean rep';
+        }
+        _state = 'down';
+        _anomaly = false;
+      }
     }
 
-    // Depth percent (170 -> 90 mapped to 0..1)
-    final clamped = (170 - kneeAngle).clamp(0, 80);
-    _depthPercent = (clamped / 80).clamp(0, 1);
-
-    // Rep state machine
-    if (!_inRep && kneeAngle < standingAngleThreshold - 10) {
-      _inRep = true;
-      _bottomReached = false;
-      _repPostureGood = _postureGood;
-    }
-
-    if (_inRep) {
-      _repPostureGood &= _postureGood;
-
-      if (!_bottomReached && kneeAngle <= bottomAngleThreshold) {
-        _bottomReached = true;
-      }
-
-      if (_bottomReached && kneeAngle >= standingAngleThreshold) {
-        if (_repPostureGood) {
-          _squatReps += 1;
-          _feedback = 'Good rep!';
-        } else {
-          _feedback = 'Posture off';
-        }
-        _inRep = false;
-      } else {
-        // Feedback guidance
-        if (kneeAngle > 150) {
-          _feedback = 'Start descent';
-        } else if (kneeAngle > 130) {
-          _feedback = 'Sit hips back';
-        } else if (kneeAngle > 110) {
-          _feedback = 'Go deeper';
-        } else if (kneeAngle > deepAngle) {
-          _feedback = 'Almost there';
-        } else {
-          _feedback = _postureGood ? 'Hold depth' : 'Adjust posture';
-        }
-      }
+    // Live feedback
+    if (_state == 'down' && _avgKnee! < 80) {
+      _feedback = _postureGood ? 'Push through heels!' : _postureStatus;
+    } else if (_state == 'up' && _avgKnee! > 170) {
+      _feedback = _postureGood ? 'Good lockout' : _postureStatus;
     } else {
-      _feedback = 'Start descent';
+      _feedback = _postureGood ? 'Keep going' : _postureStatus;
     }
   }
 
@@ -366,7 +258,7 @@ class _SquatsState extends State<Squats> {
           (_) => AlertDialog(
             title: const Row(
               children: [
-                Icon(Icons.fitness_center, color: Colors.indigo, size: 26),
+                Icon(Icons.directions_run, color: Colors.purple, size: 26),
                 SizedBox(width: 8),
                 Text(
                   'Squats',
@@ -376,13 +268,12 @@ class _SquatsState extends State<Squats> {
             ),
             content: const SingleChildScrollView(
               child: Text(
-                '1. Stand feet shoulder-width apart\n'
-                '2. Keep chest up, neutral spine\n'
-                '3. Sit hips back and down\n'
-                '4. Thighs parallel or slightly below\n'
-                '5. Drive up through heels\n'
-                '6. Knees track over toes\n\n'
-                'Camera will guide depth & posture.',
+                '1) Stand with feet shoulder-width apart\n'
+                '2) Keep your chest up and core tight\n'
+                '3) Lower until thighs are parallel to the floor\n'
+                '4) Push up through your heels\n'
+                '5) Keep knees tracking over toes\n\n'
+                'Camera will track your reps and posture.',
                 style: TextStyle(fontSize: 14, height: 1.5),
               ),
             ),
@@ -390,7 +281,7 @@ class _SquatsState extends State<Squats> {
               ElevatedButton(
                 onPressed: () => Navigator.pop(context),
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.indigo,
+                  backgroundColor: Colors.purple,
                   foregroundColor: Colors.white,
                 ),
                 child: const Text('Start'),
@@ -400,49 +291,22 @@ class _SquatsState extends State<Squats> {
     );
   }
 
-  void _showInstructionsAgain() => _showInstructionsDialog();
-
   @override
   Widget build(BuildContext context) {
     final hudColor = _postureGood ? Colors.green : Colors.redAccent;
+
     return Scaffold(
-      appBar:
-          _showCamera
-              ? AppBar(
-                title: const Text('Squats'),
-                backgroundColor: Colors.black.withValues(alpha: 0.7),
-                foregroundColor: Colors.white,
-                elevation: 0,
-                leading: IconButton(
-                  icon: const Icon(Icons.arrow_back),
-                  onPressed: () => Navigator.pop(context),
-                ),
-                actions: [
-                  IconButton(
-                    icon: const Icon(Icons.info_outline),
-                    onPressed: _showInstructionsAgain,
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.videocam_off),
-                    onPressed: () => setState(() => _showCamera = false),
-                  ),
-                ],
-              )
-              : AppBar(
-                title: const Text('Squats'),
-                backgroundColor: Colors.black,
-                foregroundColor: Colors.white,
-                leading: IconButton(
-                  icon: const Icon(Icons.arrow_back),
-                  onPressed: () => Navigator.pop(context),
-                ),
-                actions: [
-                  IconButton(
-                    icon: const Icon(Icons.videocam),
-                    onPressed: () => setState(() => _showCamera = true),
-                  ),
-                ],
-              ),
+      appBar: AppBar(
+        title: const Text('Squats'),
+        backgroundColor: Colors.black.withValues(alpha: 0.7),
+        foregroundColor: Colors.white,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.info_outline),
+            onPressed: _showInstructionsDialog,
+          ),
+        ],
+      ),
       body:
           _showCamera
               ? Stack(
@@ -450,23 +314,23 @@ class _SquatsState extends State<Squats> {
                   CameraWidget(
                     showCamera: _showCamera,
                     onImage: _onCameraImage,
-                    onToggleCamera:
-                        () => setState(() => _showCamera = !_showCamera),
                   ),
                   if (_latestPose != null &&
                       _imageWidth != null &&
                       _imageHeight != null)
                     Positioned.fill(
                       child: CustomPaint(
-                        painter: _SquatPosePainter(
+                        painter: _SquatsPainter(
                           pose: _latestPose!,
                           imageWidth: _imageWidth!,
                           imageHeight: _imageHeight!,
-                          kneeAngle: _kneeAngle,
+                          leftKnee: _leftKnee,
+                          rightKnee: _rightKnee,
+                          avgKnee: _avgKnee,
                           torsoAngle: _torsoAngle,
                           postureGood: _postureGood,
                           rotation: _rotation,
-                          mirror: true,
+                          mirror: false,
                         ),
                       ),
                     ),
@@ -486,32 +350,30 @@ class _SquatsState extends State<Squats> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Wrap(
-                              spacing: 12,
-                              runSpacing: 4,
-                              children: [
-                                Text(
-                                  'Reps: $_squatReps',
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                                if (_kneeAngle != null)
-                                  Text(
-                                    'Knee: ${_kneeAngle!.toStringAsFixed(0)}°',
-                                  ),
-                                if (_torsoAngle != null)
-                                  Text(
-                                    'Torso: ${_torsoAngle!.toStringAsFixed(0)}°',
-                                  ),
-                                Text(
-                                  _postureStatus,
-                                  style: TextStyle(
-                                    fontWeight: FontWeight.w600,
-                                    color: hudColor,
-                                  ),
-                                ),
-                              ],
+                            Text(
+                              'State: $_state   Reps: $_reps',
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            if (_avgKnee != null)
+                              Text(
+                                'Avg Knee: ${_avgKnee!.toStringAsFixed(0)}°',
+                              ),
+                            if (_leftKnee != null && _rightKnee != null)
+                              Text(
+                                'L/R Knee: ${_leftKnee!.toStringAsFixed(0)}° / ${_rightKnee!.toStringAsFixed(0)}°',
+                              ),
+                            if (_torsoAngle != null)
+                              Text(
+                                'Torso: ${_torsoAngle!.toStringAsFixed(0)}°',
+                              ),
+                            Text(
+                              _postureStatus,
+                              style: TextStyle(
+                                color: hudColor,
+                                fontWeight: FontWeight.w600,
+                              ),
                             ),
                             const SizedBox(height: 4),
                             Text(
@@ -521,6 +383,7 @@ class _SquatsState extends State<Squats> {
                                     _postureGood
                                         ? Colors.greenAccent
                                         : Colors.orangeAccent,
+                                fontWeight: FontWeight.w600,
                               ),
                             ),
                           ],
@@ -528,148 +391,75 @@ class _SquatsState extends State<Squats> {
                       ),
                     ),
                   ),
-                  Positioned(
-                    right: 12,
-                    top: 100,
-                    bottom: 100,
-                    child:
-                        _depthPercent == null
-                            ? const SizedBox()
-                            : CustomPaint(
-                              size: const Size(24, double.infinity),
-                              painter: _DepthBarPainter(_depthPercent!),
-                            ),
-                  ),
                 ],
               )
-              : _instructionsView(),
-    );
-  }
-
-  Widget _instructionsView() {
-    return Container(
-      padding: const EdgeInsets.all(24),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            'Squats',
-            style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
-          ),
-          const SizedBox(height: 24),
-          const Text(
-            'Instructions:',
-            style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
-          ),
-          const SizedBox(height: 16),
-          const Text(
-            '1. Stand feet shoulder-width apart\n'
-            '2. Keep chest up\n'
-            '3. Sit hips back & down\n'
-            '4. Thighs parallel or slightly below\n'
-            '5. Drive up through heels\n'
-            '6. Knees track over toes',
-            style: TextStyle(fontSize: 18, height: 1.5),
-          ),
-          const SizedBox(height: 32),
-          Center(
-            child: ElevatedButton.icon(
-              onPressed: () => setState(() => _showCamera = true),
-              icon: const Icon(Icons.videocam),
-              label: const Text('Start Camera'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.indigo,
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 32,
-                  vertical: 16,
-                ),
-                textStyle: const TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
+              : const Center(child: Text('Camera off')),
     );
   }
 }
 
-// Painter for skeleton + angles
-class _SquatPosePainter extends CustomPainter {
-  final bool mirror;
+// === Painter ===
+class _SquatsPainter extends CustomPainter {
   final Pose pose;
   final int imageWidth;
   final int imageHeight;
-  final double? kneeAngle;
+  final double? leftKnee;
+  final double? rightKnee;
+  final double? avgKnee;
   final double? torsoAngle;
   final bool postureGood;
   final InputImageRotation rotation;
+  final bool mirror;
 
-  _SquatPosePainter({
-    required this.mirror,
+  _SquatsPainter({
     required this.pose,
     required this.imageWidth,
     required this.imageHeight,
-    required this.kneeAngle,
+    required this.leftKnee,
+    required this.rightKnee,
+    required this.avgKnee,
     required this.torsoAngle,
     required this.postureGood,
     required this.rotation,
+    required this.mirror,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
-    canvas.save();
+    final lm = pose.landmarks;
 
     final rotated =
         rotation == InputImageRotation.rotation90deg ||
         rotation == InputImageRotation.rotation270deg;
     final effW = rotated ? imageHeight : imageWidth;
     final effH = rotated ? imageWidth : imageHeight;
-
-    final canvasPortrait = size.height > size.width;
-    final sourceLandscape = effW > effH;
-    bool rotatedCanvas = false;
-    if (canvasPortrait && sourceLandscape) {
-      canvas.translate(0, size.height);
-      canvas.rotate(-math.pi / 2);
-      rotatedCanvas = true;
-    }
-
-    final double targetW = rotatedCanvas ? size.height : size.width;
-    final double targetH = rotatedCanvas ? size.width : size.height;
-    final scaleX = targetW / effW;
-    final scaleY = targetH / effH;
-
-    final lm = pose.landmarks;
+    final scaleX = size.width / effW;
+    final scaleY = size.height / effH;
 
     Offset mapPoint(double x, double y) {
-      // Flip Y if needed
-      final flippedY = targetH - (y * scaleY); // y axis is reversed
-      return Offset(x * scaleX, flippedY);
+      final mappedX = size.width - (x * scaleX);
+      final mappedY = y * scaleY;
+      return Offset(mappedX, mappedY);
     }
 
-    final connections = <List<PoseLandmarkType>>[
+    final connections = [
       [PoseLandmarkType.leftShoulder, PoseLandmarkType.rightShoulder],
       [PoseLandmarkType.leftHip, PoseLandmarkType.rightHip],
-      [PoseLandmarkType.leftShoulder, PoseLandmarkType.leftElbow],
-      [PoseLandmarkType.leftElbow, PoseLandmarkType.leftWrist],
-      [PoseLandmarkType.rightShoulder, PoseLandmarkType.rightElbow],
-      [PoseLandmarkType.rightElbow, PoseLandmarkType.rightWrist],
-      [PoseLandmarkType.leftShoulder, PoseLandmarkType.leftHip],
-      [PoseLandmarkType.rightShoulder, PoseLandmarkType.rightHip],
       [PoseLandmarkType.leftHip, PoseLandmarkType.leftKnee],
       [PoseLandmarkType.leftKnee, PoseLandmarkType.leftAnkle],
       [PoseLandmarkType.rightHip, PoseLandmarkType.rightKnee],
       [PoseLandmarkType.rightKnee, PoseLandmarkType.rightAnkle],
+      [PoseLandmarkType.leftShoulder, PoseLandmarkType.leftHip],
+      [PoseLandmarkType.rightShoulder, PoseLandmarkType.rightHip],
     ];
 
     final linePaint =
         Paint()
-          ..color = Colors.white70
-          ..strokeWidth = 2;
+          ..color = Colors.white
+          ..strokeWidth = 2
+          ..style = PaintingStyle.stroke
+          ..strokeCap = StrokeCap.round;
+
     final jointPaint =
         Paint()
           ..color = postureGood ? Colors.greenAccent : Colors.redAccent
@@ -681,97 +471,58 @@ class _SquatPosePainter extends CustomPainter {
       if (a == null || b == null) continue;
       canvas.drawLine(mapPoint(a.x, a.y), mapPoint(b.x, b.y), linePaint);
     }
+
     for (final l in lm.values) {
       canvas.drawCircle(mapPoint(l.x, l.y), 6, jointPaint);
     }
 
-    void drawLabel(String text, PoseLandmark? landmark, Color color) {
-      if (landmark == null) return;
-      final p = mapPoint(landmark.x, landmark.y);
+    final lk = lm[PoseLandmarkType.leftKnee];
+    final rk = lm[PoseLandmarkType.rightKnee];
+    final lh = lm[PoseLandmarkType.leftHip];
+    final rh = lm[PoseLandmarkType.rightHip];
+
+    void drawLabel(String text, Offset where) {
       final tp = TextPainter(
         text: TextSpan(
           text: text,
-          style: TextStyle(
-            color: color,
+          style: const TextStyle(
+            color: Colors.yellowAccent,
             fontSize: 14,
             fontWeight: FontWeight.bold,
-            shadows: const [Shadow(color: Colors.black87, blurRadius: 4)],
+            shadows: [Shadow(color: Colors.black, blurRadius: 4)],
           ),
         ),
-        maxLines: 1,
         textDirection: TextDirection.ltr,
       )..layout();
-      tp.paint(canvas, p + const Offset(8, -20));
+      tp.paint(canvas, where);
     }
 
-    final knee =
-        lm[PoseLandmarkType.leftKnee] ?? lm[PoseLandmarkType.rightKnee];
-    if (kneeAngle != null) {
-      drawLabel('${kneeAngle!.toStringAsFixed(0)}°', knee, Colors.yellowAccent);
-    }
-
-    final shoulderL = lm[PoseLandmarkType.leftShoulder];
-    final shoulderR = lm[PoseLandmarkType.rightShoulder];
-    if (torsoAngle != null && shoulderL != null && shoulderR != null) {
-      final midX = (shoulderL.x + shoulderR.x) / 2;
-      final midY = (shoulderL.y + shoulderR.y) / 2;
-      final dummy = PoseLandmark(
-        type: PoseLandmarkType.leftShoulder,
-        x: midX,
-        y: midY,
-        z: 0,
-        likelihood: 1,
-      );
+    if (leftKnee != null && lk != null) {
       drawLabel(
-        '${torsoAngle!.toStringAsFixed(0)}° torso',
-        dummy,
-        Colors.cyanAccent,
+        '${leftKnee!.toStringAsFixed(0)}°',
+        mapPoint(lk.x, lk.y) + const Offset(8, -20),
       );
     }
-    canvas.restore();
+    if (rightKnee != null && rk != null) {
+      drawLabel(
+        '${rightKnee!.toStringAsFixed(0)}°',
+        mapPoint(rk.x, rk.y) + const Offset(8, -20),
+      );
+    }
+    if (avgKnee != null && lh != null && rh != null) {
+      final mid = Offset((lh.x + rh.x) / 2, (lh.y + rh.y) / 2);
+      drawLabel(
+        'AVG ${avgKnee!.toStringAsFixed(0)}°',
+        mapPoint(mid.dx, mid.dy) + const Offset(8, -24),
+      );
+    }
   }
 
   @override
-  bool shouldRepaint(covariant _SquatPosePainter old) =>
+  bool shouldRepaint(covariant _SquatsPainter old) =>
       old.pose != pose ||
-      old.kneeAngle != kneeAngle ||
-      old.torsoAngle != torsoAngle ||
-      old.postureGood != postureGood ||
-      old.imageWidth != imageWidth ||
-      old.imageHeight != imageHeight ||
-      old.rotation != rotation;
-}
-
-// Depth bar painter remains unchanged...
-class _DepthBarPainter extends CustomPainter {
-  final double depth;
-  _DepthBarPainter(this.depth);
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final bg = Paint()..color = Colors.white24;
-    final fg =
-        Paint()
-          ..shader = const LinearGradient(
-            colors: [Colors.indigo, Colors.greenAccent],
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-          ).createShader(Rect.fromLTWH(0, 0, size.width, size.height));
-
-    final rect = RRect.fromRectAndRadius(
-      Rect.fromLTWH(0, 0, size.width, size.height),
-      const Radius.circular(8),
-    );
-    canvas.drawRRect(rect, bg);
-
-    final h = size.height * depth;
-    final fill = RRect.fromRectAndRadius(
-      Rect.fromLTWH(0, size.height - h, size.width, h),
-      const Radius.circular(8),
-    );
-    canvas.drawRRect(fill, fg);
-  }
-
-  @override
-  bool shouldRepaint(covariant _DepthBarPainter old) => old.depth != depth;
+      old.leftKnee != leftKnee ||
+      old.rightKnee != rightKnee ||
+      old.avgKnee != avgKnee ||
+      old.postureGood != postureGood;
 }

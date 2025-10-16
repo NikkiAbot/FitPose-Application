@@ -84,6 +84,7 @@ flutter:
     - lib/images/
     - assets/form_knn.onnx
     - assets/form_labels.json
+    - assets/squats_model.onnx
   #   - images/a_dot_ham.jpeg
 
   # An image asset can refer to one or more resolution-specific "variants", see

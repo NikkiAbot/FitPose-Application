@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
+import 'package:flutter/services.dart';
+import 'package:onnxruntime/onnxruntime.dart';
 
 import '../../components/camera_widget.dart';
 
@@ -21,7 +23,12 @@ class _SquatsState extends State<Squats> {
     options: PoseDetectorOptions(mode: PoseDetectionMode.stream),
   );
 
+<<<<<<< Updated upstream
   // Frame processing control
+=======
+  OrtSession? _onnxSession;
+
+>>>>>>> Stashed changes
   bool _isProcessing = false;
   int _lastProcessMs = 0;
 
@@ -47,6 +54,7 @@ class _SquatsState extends State<Squats> {
   bool _repPostureGood = true;
 
   // Thresholds
+<<<<<<< Updated upstream
   static const double standingAngleThreshold = 165;
   static const double bottomAngleThreshold =
       80; // was 100; require ≤80° at bottom
@@ -54,6 +62,12 @@ class _SquatsState extends State<Squats> {
       80; // was 95; align guidance with target depth
   static const double maxTorsoLeanDeg = 25;
   static const double maxHipLevelRatio = 0.05;
+=======
+  static const double downThresh = 90;
+  static const double upThresh = 160;
+  static const double maxTorsoLeanDeg = 20;
+  static const double maxAsymmetryDeg = 15;
+>>>>>>> Stashed changes
 
   // Rotation assumption
   InputImageRotation _rotation = InputImageRotation.rotation0deg;
@@ -66,15 +80,34 @@ class _SquatsState extends State<Squats> {
     WidgetsBinding.instance.addPostFrameCallback(
       (_) => _showInstructionsDialog(),
     );
+    _loadOnnxModel();
   }
 
   @override
   void dispose() {
     _poseDetector.close();
+    _onnxSession?.release();
     super.dispose();
   }
 
+<<<<<<< Updated upstream
   // Camera image callback
+=======
+  Future<void> _loadOnnxModel() async {
+    try {
+      OrtEnv.instance.init();
+      final bytes =
+          (await rootBundle.load(
+            'assets/models/your_model.onnx',
+          )).buffer.asUint8List();
+      final options = OrtSessionOptions();
+      _onnxSession = OrtSession.fromBuffer(bytes, options);
+    } catch (e) {
+      if (kDebugMode) print('[ONNX] Failed to load model: $e');
+    }
+  }
+
+>>>>>>> Stashed changes
   void _onCameraImage(
     CameraImage image,
     int rotationDegrees,
@@ -150,7 +183,12 @@ class _SquatsState extends State<Squats> {
 
       _consecutiveFail = 0;
       _latestPose = poses.first;
+
+      // --- Run rule-based analysis ---
       _analyzePose(_latestPose!);
+
+      // --- Run ONNX model ---
+      await _analyzeWithOnnx(_latestPose!);
     } catch (e) {
       if (kDebugMode) {
         print('[Pose] Exception convert: $e');
@@ -277,6 +315,7 @@ class _SquatsState extends State<Squats> {
     );
     final midHip = Offset((hipL.x + hipR.x) / 2, (hipL.y + hipR.y) / 2);
 
+<<<<<<< Updated upstream
     final shoulderFlipped = mapYUp(midShoulder);
     final hipFlipped = mapYUp(midHip);
 
@@ -311,8 +350,49 @@ class _SquatsState extends State<Squats> {
       _torsoAngle = null; // no reliable torso, hide value
       _postureGood = false;
       _postureStatus = 'Tracking...';
-    }
+=======
+    final midSh = Offset((ls!.x + rs!.x) / 2, (ls.y + rs.y) / 2);
+    final midHp = Offset((lh.x + rh.x) / 2, (lh.y + rh.y) / 2);
+    final torsoVec = midSh - midHp;
+    _torsoAngle =
+        (180 / math.pi) * math.atan2(torsoVec.dx.abs(), torsoVec.dy.abs());
 
+    final kneesDiff = ((_leftKnee ?? 0) - (_rightKnee ?? 0)).abs();
+    final upright = _torsoAngle! < maxTorsoLeanDeg;
+    final symmetric = kneesDiff < maxAsymmetryDeg;
+    _postureGood = upright && symmetric;
+    _postureStatus =
+        _postureGood
+            ? 'Good posture'
+            : (!upright ? 'Keep chest up' : 'Balance knees evenly');
+
+    // FSM for rep counting
+    if (_state == 'waiting') {
+      if (_avgKnee! < downThresh) {
+        _state = 'down';
+        _anomaly = false;
+      }
+    } else if (_state == 'down') {
+      if (_avgKnee! > upThresh) {
+        _state = 'up';
+        if (!_postureGood) _anomaly = true;
+      }
+    } else if (_state == 'up') {
+      if (_avgKnee! < downThresh) {
+        if (!_anomaly && _postureGood) {
+          _reps += 1;
+          _feedback = 'Rep ✓';
+        } else {
+          _feedback = 'Fix form for clean rep';
+        }
+        _state = 'down';
+        _anomaly = false;
+      }
+>>>>>>> Stashed changes
+    }
+  }
+
+<<<<<<< Updated upstream
     // Depth percent (170 -> 90 mapped to 0..1)
     final clamped = (170 - kneeAngle).clamp(0, 80);
     _depthPercent = (clamped / 80).clamp(0, 1);
@@ -355,6 +435,57 @@ class _SquatsState extends State<Squats> {
       }
     } else {
       _feedback = 'Start descent';
+=======
+  Future<void> _analyzeWithOnnx(Pose pose) async {
+    if (_onnxSession == null || _imageWidth == null || _imageHeight == null) {
+      return;
+    }
+
+    final keyJoints = [
+      PoseLandmarkType.leftShoulder,
+      PoseLandmarkType.rightShoulder,
+      PoseLandmarkType.leftHip,
+      PoseLandmarkType.rightHip,
+      PoseLandmarkType.leftKnee,
+      PoseLandmarkType.rightKnee,
+      PoseLandmarkType.leftAnkle,
+      PoseLandmarkType.rightAnkle,
+    ];
+
+    final features = <double>[];
+    final width = _imageWidth!;
+    final height = _imageHeight!;
+
+    for (final jt in keyJoints) {
+      final lm = pose.landmarks[jt];
+      features.add((lm?.x ?? 0.0) / width);
+      features.add((lm?.y ?? 0.0) / height);
+    }
+
+    final inputTensor = OrtValueTensor.createTensorWithDataList(
+      Float32List.fromList(features),
+      [1, features.length],
+    );
+
+    try {
+      final outputs = _onnxSession!.run(OrtRunOptions(), {
+        'float_input': inputTensor,
+      });
+      if (outputs.isEmpty) return;
+
+      final floatData = outputs.first?.toFloat32List();
+      if (floatData == null || floatData.length < 2) return;
+
+      final modelScore = floatData[0];
+      final repDetected = floatData[1] > 0.5;
+
+      // Combine ONNX output with rule-based posture
+      _postureGood = _postureGood && modelScore > 0.7;
+      if (repDetected && !_anomaly && _postureGood) _reps += 1;
+      _feedback = _postureGood ? 'Good form' : 'Fix form';
+    } catch (e) {
+      if (kDebugMode) print('[ONNX] Inference failed: $e');
+>>>>>>> Stashed changes
     }
   }
 
@@ -406,6 +537,7 @@ class _SquatsState extends State<Squats> {
   Widget build(BuildContext context) {
     final hudColor = _postureGood ? Colors.green : Colors.redAccent;
     return Scaffold(
+<<<<<<< Updated upstream
       appBar:
           _showCamera
               ? AppBar(
@@ -443,6 +575,19 @@ class _SquatsState extends State<Squats> {
                   ),
                 ],
               ),
+=======
+      appBar: AppBar(
+        title: const Text('Squats'),
+        backgroundColor: Colors.black.withAlpha(180),
+        foregroundColor: Colors.white,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.info_outline),
+            onPressed: _showInstructionsDialog,
+          ),
+        ],
+      ),
+>>>>>>> Stashed changes
       body:
           _showCamera
               ? Stack(
@@ -685,9 +830,13 @@ class _SquatPosePainter extends CustomPainter {
       canvas.drawCircle(mapPoint(l.x, l.y), 6, jointPaint);
     }
 
+<<<<<<< Updated upstream
     void drawLabel(String text, PoseLandmark? landmark, Color color) {
       if (landmark == null) return;
       final p = mapPoint(landmark.x, landmark.y);
+=======
+    void drawLabel(String text, Offset where) {
+>>>>>>> Stashed changes
       final tp = TextPainter(
         text: TextSpan(
           text: text,
@@ -704,6 +853,7 @@ class _SquatPosePainter extends CustomPainter {
       tp.paint(canvas, p + const Offset(8, -20));
     }
 
+<<<<<<< Updated upstream
     final knee =
         lm[PoseLandmarkType.leftKnee] ?? lm[PoseLandmarkType.rightKnee];
     if (kneeAngle != null) {
@@ -722,6 +872,14 @@ class _SquatPosePainter extends CustomPainter {
         z: 0,
         likelihood: 1,
       );
+=======
+    final lk = lm[PoseLandmarkType.leftKnee];
+    final rk = lm[PoseLandmarkType.rightKnee];
+    final lh = lm[PoseLandmarkType.leftHip];
+    final rh = lm[PoseLandmarkType.rightHip];
+
+    if (leftKnee != null && lk != null) {
+>>>>>>> Stashed changes
       drawLabel(
         '${torsoAngle!.toStringAsFixed(0)}° torso',
         dummy,
@@ -774,4 +932,18 @@ class _DepthBarPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _DepthBarPainter old) => old.depth != depth;
+}
+
+// --- OrtValue Extension ---
+extension OrtValueExtensions on OrtValue {
+  Float32List? toFloat32List() {
+    if (this is OrtValueTensor) {
+      final tensor = this as OrtValueTensor;
+      final value = tensor.value;
+      if (value is Float32List) {
+        return value;
+      }
+    }
+    return null;
+  }
 }

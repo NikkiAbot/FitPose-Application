@@ -21,7 +21,10 @@ class _ShoulderPressPageState extends State<ShoulderPressPage> {
 
   // Pose detector
   late final PoseDetector _poseDetector = PoseDetector(
-    options: PoseDetectorOptions(mode: PoseDetectionMode.stream),
+      options: PoseDetectorOptions(
+      mode: PoseDetectionMode.stream,         // Keep stream for real-time
+      model: PoseDetectionModel.accurate,
+      ),     
   );
 
   // ML Classifier
@@ -55,9 +58,10 @@ class _ShoulderPressPageState extends State<ShoulderPressPage> {
   bool _anomaly = false;
 
   static const double loweredThresh = 90; // down
-  static const double raisedThresh = 160; // up
-  static const double maxTorsoLeanDeg = 15; // posture tolerance
-  static const double maxAsymmetryDeg = 12; // elbows diff
+  static const double raisedThresh = 100; // up
+  static const double minTorsoAngleDeg = 88; // ADDED: Below this = arching back
+  static const double maxTorsoAngleDeg = 100; // Above this = leaning forward
+  static const double maxAsymmetryDeg = 25; // elbows diff (relaxed for better detection)
 
   // Use portrait 270 like your working BicepCurl page
   InputImageRotation _rotation = InputImageRotation.rotation270deg;
@@ -200,16 +204,18 @@ class _ShoulderPressPageState extends State<ShoulderPressPage> {
   }
 
   // Angle calculation using dot product
-  double _angle(Offset a, Offset b, Offset c) {
-    a = Offset(a.dx, -a.dy);
-    b = Offset(b.dx, -b.dy);
-    c = Offset(c.dx, -c.dy);
-
+ double _angle(Offset a, Offset b, Offset c) {
     final ab = a - b;
     final cb = c - b;
+    
     final dot = ab.dx * cb.dx + ab.dy * cb.dy;
-    final denom = ab.distance * cb.distance;
-    if (denom == 0) return 0;
+    
+    // *** L1 NORM (Manhattan distance) - matches Python ***
+    final normAB = ab.dx.abs() + ab.dy.abs();
+    final normCB = cb.dx.abs() + cb.dy.abs();
+    final denom = (normAB * normCB) + 1e-7;
+    
+    if (denom == 0) return 0.0;
     final cosv = (dot / denom).clamp(-1.0, 1.0);
     return (180 / math.pi) * math.acos(cosv);
   }
@@ -315,31 +321,107 @@ class _ShoulderPressPageState extends State<ShoulderPressPage> {
     );
     _avgElbow = ((_leftElbow ?? 0) + (_rightElbow ?? 0)) / 2.0;
 
-    // Calculate trunk angle
+    // *** FIXED: Calculate trunk angle EXACTLY like Python and feature extractor ***
     final midSh = Offset((ls.x + rs.x) / 2, (ls.y + rs.y) / 2);
     final midHp = Offset((lh!.x + rh!.x) / 2, (lh.y + rh.y) / 2);
-    final torsoVec = midSh - midHp;
-    _trunkAngle =
-        (180 / math.pi) * math.atan2(torsoVec.dx.abs(), torsoVec.dy.abs());
+    
+    // Reference point: horizontal from mid_shoulder (MATCHES PYTHON & ML)
+    final refPoint = Offset(midSh.dx + 1.0, midSh.dy);
+    
+    // Use 3-point angle function (MATCHES PYTHON & FEATURE EXTRACTOR)
+    _trunkAngle = _angle(midHp, midSh, refPoint);
 
     // Rule-based posture quality checks
     final elbowsDiff = ((_leftElbow ?? 0) - (_rightElbow ?? 0)).abs();
-    final upright = _trunkAngle! < maxTorsoLeanDeg;
+    
+    // *** RANGE-BASED TRUNK CHECK: 80° to 100° is acceptable ***
+    // Below 80° = arching back, Above 100° = leaning forward
+    final upright = _trunkAngle! >= minTorsoAngleDeg && _trunkAngle! <= maxTorsoAngleDeg;
+    
     final symmetric = elbowsDiff < maxAsymmetryDeg;
     final ruleBasedGood = upright && symmetric;
 
-    // Combine rule-based and ML predictions (hybrid approach)
-    _postureGood = ruleBasedGood && (_classifierReady ? _mlGoodForm : true);
+    // Debug: Show trunk angle status
+    if (kDebugMode) {
+      final status = _trunkAngle! < minTorsoAngleDeg 
+          ? 'ARCHING (<${minTorsoAngleDeg}°)' 
+          : (_trunkAngle! > maxTorsoAngleDeg ? 'LEANING (>${maxTorsoAngleDeg}°)' : 'UPRIGHT (${minTorsoAngleDeg}-${maxTorsoAngleDeg}°)');
+      print('[Trunk] ${_trunkAngle!.toStringAsFixed(1)}° | Status: $status | Upright: $upright | Symmetric: $symmetric');
+    }
 
-    // Update posture status message
-    if (_postureGood) {
-      _postureStatus = 'Good Form ✓';
-    } else if (_classifierReady && !_mlGoodForm) {
-      _postureStatus = 'ML: $_mlLabel';
-    } else if (!upright) {
-      _postureStatus = 'Don\'t arch/lean';
+    // *** LABEL-SPECIFIC CONFIDENCE THRESHOLDS ***
+    const goodFormThreshold = 0.55;          // 55% for Good-Form (lenient)
+    const elbowsFlaringThreshold = 0.70;     // 65% for Elbows Flaring Out (strict)
+    
+    if (_classifierReady) {
+      // Determine which threshold to use based on ML prediction label
+      final requiredConfidence = _mlGoodForm 
+          ? goodFormThreshold      // Good-Form needs 55%+
+          : elbowsFlaringThreshold; // Elbows Flaring Out needs 65%+
+      
+      if (_mlConfidence >= requiredConfidence) {
+        // ═══ CONFIDENCE MEETS LABEL-SPECIFIC THRESHOLD ═══
+        
+        if (_mlGoodForm) {
+          // ML says Good-Form with 55%+ confidence - accept it
+          _postureGood = true;
+          _postureStatus = 'Good Form ✓ (ML: ${(_mlConfidence * 100).toStringAsFixed(1)}%)';
+          
+          if (kDebugMode) {
+            print('[ML] ✓ Good-Form @ ${(_mlConfidence * 100).toStringAsFixed(1)}% (threshold: 55%)');
+          }
+        } else {
+          // ML says Elbows Flaring Out with 65%+ confidence - accept it
+          _postureGood = false;
+          _postureStatus = 'ML: $_mlLabel (${(_mlConfidence * 100).toStringAsFixed(1)}%)';
+          
+          if (kDebugMode) {
+            print('[ML] ✗ $_mlLabel @ ${(_mlConfidence * 100).toStringAsFixed(1)}% (threshold: 65%)');
+          }
+        }
+      } else {
+        // ═══ CONFIDENCE TOO LOW FOR THIS LABEL ═══
+        // ML not confident enough - fallback to rule-based
+        _postureGood = ruleBasedGood;
+        
+        // *** IMPROVED FEEDBACK: Specific trunk angle issue ***
+        String ruleFeedback;
+        if (!upright) {
+          if (_trunkAngle! < minTorsoAngleDeg) {
+            ruleFeedback = 'Don\'t arch back';      // < 80° (arching)
+          } else {
+            ruleFeedback = 'Don\'t lean forward';   // > 100° (leaning)
+          }
+        } else if (!symmetric) {
+          ruleFeedback = 'Keep arms symmetric';
+        } else {
+          ruleFeedback = 'Good Form ✓ (Rules)';
+        }
+        
+        _postureStatus = ruleFeedback;
+        
+        if (kDebugMode) {
+          print('[ML] ⚠️ $_mlLabel @ ${(_mlConfidence * 100).toStringAsFixed(1)}% < ${(requiredConfidence * 100).toStringAsFixed(0)}% threshold - using rules: $ruleBasedGood');
+        }
+      }
     } else {
-      _postureStatus = 'Keep arms symmetric';
+      // ML not ready - use rules only
+      _postureGood = ruleBasedGood;
+      
+      String ruleFeedback;
+      if (!upright) {
+        if (_trunkAngle! < minTorsoAngleDeg) {
+          ruleFeedback = 'Don\'t arch back';        // < 80° (arching)
+        } else {
+          ruleFeedback = 'Don\'t lean forward';     // > 100° (leaning)
+        }
+      } else if (!symmetric) {
+        ruleFeedback = 'Keep arms symmetric';
+      } else {
+        ruleFeedback = 'Good Form ✓';
+      }
+      
+      _postureStatus = ruleFeedback;
     }
 
     // FSM transitions for rep counting
@@ -351,7 +433,21 @@ class _ShoulderPressPageState extends State<ShoulderPressPage> {
     } else if (_state == 'lowered') {
       if (_avgElbow! > raisedThresh) {
         _state = 'raised';
-        if (!_postureGood) _anomaly = true;
+        
+        // *** Only mark anomaly if "Elbows Flaring Out" is detected with 65%+ confidence ***
+        if (!_postureGood) {
+          if (_classifierReady && !_mlGoodForm && _mlConfidence >= 0.65) {
+            // ML confidently detected Elbows Flaring Out
+            _anomaly = true;
+            if (kDebugMode) {
+              print('[Anomaly] ✗ Marked: $_mlLabel @ ${(_mlConfidence * 100).toStringAsFixed(1)}%');
+            }
+          } else if (!_classifierReady && !ruleBasedGood) {
+            // No ML - use rule-based detection
+            _anomaly = true;
+            if (kDebugMode) print('[Anomaly] ✗ Marked by rules');
+          }
+        }
       }
     } else if (_state == 'raised') {
       if (_avgElbow! < loweredThresh) {
@@ -359,8 +455,10 @@ class _ShoulderPressPageState extends State<ShoulderPressPage> {
           _reps += 1;
           _feedback = 'Rep ✓';
         } else {
-          _feedback = _classifierReady 
-              ? 'Fix form: $_mlLabel' 
+          _feedback = _anomaly 
+              ? (_classifierReady && _mlConfidence >= 0.65 
+                  ? 'Fix form: $_mlLabel' 
+                  : 'Form issue detected')
               : 'Fix form for clean rep';
         }
         _state = 'lowered';

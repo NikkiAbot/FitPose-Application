@@ -1,4 +1,7 @@
 import 'dart:math' as math;
+import 'dart:typed_data';
+import 'package:fitpose/models/shoulderpress-feature-extract.dart';
+import 'package:fitpose/models/shoulder_press_classifier.dart';
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
@@ -16,10 +19,14 @@ class ShoulderPressPage extends StatefulWidget {
 class _ShoulderPressPageState extends State<ShoulderPressPage> {
   final _showCamera = true;
 
-  // Pose detector (same API as your BicepCurl page)
+  // Pose detector
   late final PoseDetector _poseDetector = PoseDetector(
     options: PoseDetectorOptions(mode: PoseDetectionMode.stream),
   );
+
+  // ML Classifier
+  final ShoulderPressClassifier _classifier = ShoulderPressClassifier();
+  bool _classifierReady = false;
 
   bool _isProcessing = false;
   int _lastProcessMs = 0;
@@ -37,6 +44,11 @@ class _ShoulderPressPageState extends State<ShoulderPressPage> {
   String _postureStatus = 'Tracking...';
   bool _postureGood = false;
 
+  // ML Model predictions
+  String _mlLabel = 'Initializing...';
+  double _mlConfidence = 0.0;
+  bool _mlGoodForm = false;
+
   // FSM for reps
   int _reps = 0;
   String _state = 'waiting'; // waiting | lowered | raised
@@ -53,6 +65,26 @@ class _ShoulderPressPageState extends State<ShoulderPressPage> {
   @override
   void initState() {
     super.initState();
+    
+    // Initialize the classifier
+    _classifier.initialize().then((_) {
+      if (mounted) {
+        setState(() {
+          _classifierReady = true;
+          _mlLabel = 'Ready';
+        });
+      }
+      if (kDebugMode) print('[ShoulderPress] ✓ Classifier ready');
+    }).catchError((e) {
+      if (mounted) {
+        setState(() {
+          _classifierReady = false;
+          _mlLabel = 'Model error';
+        });
+      }
+      if (kDebugMode) print('[ShoulderPress] ✗ Classifier init failed: $e');
+    });
+    
     WidgetsBinding.instance.addPostFrameCallback(
       (_) => _showInstructionsDialog(),
     );
@@ -61,10 +93,11 @@ class _ShoulderPressPageState extends State<ShoulderPressPage> {
   @override
   void dispose() {
     _poseDetector.close();
+    _classifier.dispose();
     super.dispose();
   }
 
-  // === Camera frame handler (same throttle style as your curl page) ===
+  // === Camera frame handler ===
   void _onCameraImage(
     CameraImage image,
     int rotationDegrees,
@@ -75,7 +108,6 @@ class _ShoulderPressPageState extends State<ShoulderPressPage> {
     _isProcessing = true;
     _lastProcessMs = now;
 
-    // Lock to portrait like BicepCurl
     _rotation = InputImageRotation.rotation270deg;
 
     _processPose(image).whenComplete(() {
@@ -95,32 +127,40 @@ class _ShoulderPressPageState extends State<ShoulderPressPage> {
         metadata: InputImageMetadata(
           size: Size(image.width.toDouble(), image.height.toDouble()),
           rotation: _rotation,
-          format: InputImageFormat.nv21, // matches the NV21 byte layout above
+          format: InputImageFormat.nv21,
           bytesPerRow: image.planes.first.bytesPerRow,
         ),
       );
 
       final poses = await _poseDetector.processImage(inputImage);
       if (poses.isEmpty) {
-        _latestPose = null;
-        _feedback = 'No pose detected';
-        _postureStatus = 'Tracking...';
-        _postureGood = false;
+        if (mounted) {
+          setState(() {
+            _latestPose = null;
+            _feedback = 'No pose detected';
+            _postureStatus = 'Tracking...';
+            _postureGood = false;
+          });
+        }
         return;
       }
 
       _latestPose = poses.first;
-      _analyzePose(_latestPose!);
+      await _analyzePose(_latestPose!);
     } catch (e) {
       if (kDebugMode) print('[ShoulderPress] Exception: $e');
-      _latestPose = null;
-      _feedback = 'Error processing frame';
-      _postureStatus = 'Tracking...';
-      _postureGood = false;
+      if (mounted) {
+        setState(() {
+          _latestPose = null;
+          _feedback = 'Error processing frame';
+          _postureStatus = 'Tracking...';
+          _postureGood = false;
+        });
+      }
     }
   }
 
-  // Same converter you use in BicepCurl (YUV420 -> NV21)
+  // YUV420 -> NV21 converter
   Uint8List _yuv420ToNv21(CameraImage image) {
     final width = image.width;
     final height = image.height;
@@ -159,7 +199,7 @@ class _ShoulderPressPageState extends State<ShoulderPressPage> {
     return out;
   }
 
-  // Angle at the middle point b (a-b-c), using standard dot-product formula
+  // Angle calculation using dot product
   double _angle(Offset a, Offset b, Offset c) {
     a = Offset(a.dx, -a.dy);
     b = Offset(b.dx, -b.dy);
@@ -174,8 +214,68 @@ class _ShoulderPressPageState extends State<ShoulderPressPage> {
     return (180 / math.pi) * math.acos(cosv);
   }
 
-  // Compute angles + rep logic similar to your Python FSM
-  void _analyzePose(Pose pose) {
+  // TEST: Feature extractor verification
+  void _testFeatureExtractor(Pose pose) {
+    final features = ShoulderPressFeatures.computeFeatures(pose);
+    
+    if (features == null) {
+      if (kDebugMode) print('[Test] Features: null (missing landmarks)');
+      return;
+    }
+    
+    if (kDebugMode) {
+      print('╔════════════════════════════════════════════════════════╗');
+      print('║  ML Feature Extraction Test                           ║');
+      print('╠════════════════════════════════════════════════════════╣');
+      print('║  1. left_elbow_angle:          ${features[0].toStringAsFixed(2).padLeft(8)}°  ║');
+      print('║  2. right_elbow_angle:         ${features[1].toStringAsFixed(2).padLeft(8)}°  ║');
+      print('║  3. shoulder_width:            ${features[2].toStringAsFixed(4).padLeft(8)}   ║');
+      print('║  4. wrist_shoulder_diff_left:  ${features[3].toStringAsFixed(4).padLeft(8)}   ║');
+      print('║  5. wrist_shoulder_diff_right: ${features[4].toStringAsFixed(4).padLeft(8)}   ║');
+      print('║  6. trunk_angle:               ${features[5].toStringAsFixed(2).padLeft(8)}°  ║');
+      print('║  7. elbow_angle_diff:          ${features[6].toStringAsFixed(2).padLeft(8)}°  ║');
+      print('╚════════════════════════════════════════════════════════╝');
+    }
+  }
+
+  // TEST: ML Classifier prediction
+  Future<void> _testClassifier(Pose pose) async {
+    if (!_classifierReady) {
+      if (kDebugMode) print('[ML] Classifier not ready yet');
+      return;
+    }
+
+    try {
+      final prediction = await _classifier.predict(pose);
+      
+      if (kDebugMode) {
+        print('╔════════════════════════════════════════════════════════╗');
+        print('║  ML PREDICTION TEST                                    ║');
+        print('╠════════════════════════════════════════════════════════╣');
+        print('║  Label: ${prediction['label'].toString().padRight(45)} ║');
+        print('║  Confidence: ${((prediction['confidence'] as double) * 100).toStringAsFixed(1).padRight(43)}% ║');
+        print('║  Good Form: ${(prediction['isGoodForm'] as bool).toString().padRight(43)} ║');
+        if (prediction.containsKey('probabilities')) {
+          final probs = prediction['probabilities'] as List<double>;
+          print('║  Probabilities: ${probs.map((p) => p.toStringAsFixed(3)).join(', ').padRight(37)} ║');
+        }
+        print('╚════════════════════════════════════════════════════════╝');
+      }
+      
+      // Update ML state variables
+      _mlLabel = prediction['label'] as String;
+      _mlConfidence = prediction['confidence'] as double;
+      _mlGoodForm = prediction['isGoodForm'] as bool;
+    } catch (e) {
+      if (kDebugMode) print('[ML] Prediction error: $e');
+      _mlLabel = 'Prediction error';
+      _mlConfidence = 0.0;
+      _mlGoodForm = false;
+    }
+  }
+
+  // Main pose analysis function
+  Future<void> _analyzePose(Pose pose) async {
     final lm = pose.landmarks;
 
     final ls = lm[PoseLandmarkType.leftShoulder];
@@ -194,7 +294,15 @@ class _ShoulderPressPageState extends State<ShoulderPressPage> {
       return;
     }
 
-    // Elbow angles (both arms)
+    // ═══ TEST FEATURE EXTRACTION ═══
+    _testFeatureExtractor(pose);
+    // ═══════════════════════════════
+
+    // ═══ TEST ML PREDICTION ═══
+    await _testClassifier(pose);
+    // ══════════════════════════
+
+    // Calculate elbow angles (both arms)
     _leftElbow = _angle(
       Offset(ls!.x, ls.y),
       Offset(le!.x, le.y),
@@ -207,24 +315,34 @@ class _ShoulderPressPageState extends State<ShoulderPressPage> {
     );
     _avgElbow = ((_leftElbow ?? 0) + (_rightElbow ?? 0)) / 2.0;
 
-    // Trunk angle as lean (approx): angle between mid-hip -> mid-shoulder vector and vertical
+    // Calculate trunk angle
     final midSh = Offset((ls.x + rs.x) / 2, (ls.y + rs.y) / 2);
     final midHp = Offset((lh!.x + rh!.x) / 2, (lh.y + rh.y) / 2);
     final torsoVec = midSh - midHp;
     _trunkAngle =
         (180 / math.pi) * math.atan2(torsoVec.dx.abs(), torsoVec.dy.abs());
 
-    // Posture quality
+    // Rule-based posture quality checks
     final elbowsDiff = ((_leftElbow ?? 0) - (_rightElbow ?? 0)).abs();
     final upright = _trunkAngle! < maxTorsoLeanDeg;
     final symmetric = elbowsDiff < maxAsymmetryDeg;
-    _postureGood = upright && symmetric;
-    _postureStatus =
-        _postureGood
-            ? 'Good Posture'
-            : (!upright ? 'Don’t arch/lean' : 'Keep arms symmetric');
+    final ruleBasedGood = upright && symmetric;
 
-    // FSM transitions
+    // Combine rule-based and ML predictions (hybrid approach)
+    _postureGood = ruleBasedGood && (_classifierReady ? _mlGoodForm : true);
+
+    // Update posture status message
+    if (_postureGood) {
+      _postureStatus = 'Good Form ✓';
+    } else if (_classifierReady && !_mlGoodForm) {
+      _postureStatus = 'ML: $_mlLabel';
+    } else if (!upright) {
+      _postureStatus = 'Don\'t arch/lean';
+    } else {
+      _postureStatus = 'Keep arms symmetric';
+    }
+
+    // FSM transitions for rep counting
     if (_state == 'waiting') {
       if (_avgElbow! < loweredThresh) {
         _state = 'lowered';
@@ -241,19 +359,21 @@ class _ShoulderPressPageState extends State<ShoulderPressPage> {
           _reps += 1;
           _feedback = 'Rep ✓';
         } else {
-          _feedback = 'Fix form for clean rep';
+          _feedback = _classifierReady 
+              ? 'Fix form: $_mlLabel' 
+              : 'Fix form for clean rep';
         }
         _state = 'lowered';
         _anomaly = false;
       }
     }
 
-    // Live feedback
+    // Live feedback based on movement phase
     if (_state == 'lowered' && _avgElbow! < 70) {
       _feedback = _postureGood ? 'Drive up!' : _postureStatus;
     } else if (_state == 'raised' && _avgElbow! > 170) {
       _feedback = _postureGood ? 'Control the descent' : _postureStatus;
-    } else {
+    } else if (_feedback != 'Rep ✓' && !_feedback.startsWith('Fix form')) {
       _feedback = _postureGood ? 'Keep going' : _postureStatus;
     }
   }
@@ -262,40 +382,39 @@ class _ShoulderPressPageState extends State<ShoulderPressPage> {
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder:
-          (_) => AlertDialog(
-            title: const Row(
-              children: [
-                Icon(Icons.fitness_center, color: Colors.purple, size: 26),
-                SizedBox(width: 8),
-                Text(
-                  'Shoulder Press',
-                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-                ),
-              ],
+      builder: (_) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.fitness_center, color: Colors.purple, size: 26),
+            SizedBox(width: 8),
+            Text(
+              'Shoulder Press',
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
             ),
-            content: const SingleChildScrollView(
-              child: Text(
-                '1) Stand tall, feet shoulder-width\n'
-                '2) Palms forward at shoulder level\n'
-                '3) Press straight overhead\n'
-                '4) Keep core braced (no back arch)\n'
-                '5) Lower to shoulder level each rep\n\n'
-                'Camera will track your reps and posture.',
-                style: TextStyle(fontSize: 14, height: 1.5),
-              ),
-            ),
-            actions: [
-              ElevatedButton(
-                onPressed: () => Navigator.pop(context),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.purple,
-                  foregroundColor: Colors.white,
-                ),
-                child: const Text('Start'),
-              ),
-            ],
+          ],
+        ),
+        content: const SingleChildScrollView(
+          child: Text(
+            '1) Stand tall, feet shoulder-width\n'
+            '2) Palms forward at shoulder level\n'
+            '3) Press straight overhead\n'
+            '4) Keep core braced (no back arch)\n'
+            '5) Lower to shoulder level each rep\n\n'
+            'Camera will track your reps and posture.',
+            style: TextStyle(fontSize: 14, height: 1.5),
           ),
+        ),
+        actions: [
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.purple,
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('Start'),
+          ),
+        ],
+      ),
     );
   }
 
@@ -315,100 +434,117 @@ class _ShoulderPressPageState extends State<ShoulderPressPage> {
           ),
         ],
       ),
-      body:
-          _showCamera
-              ? Stack(
-                children: [
-                  // Non-mirrored camera (true image)
-                  CameraWidget(
-                    showCamera: _showCamera,
-                    onImage: _onCameraImage,
-                    // If you want to hard-lock rotation to 90:
-                    // forcedRotationDegrees: 90,
-                  ),
+      body: _showCamera
+          ? Stack(
+              children: [
+                // Camera view
+                CameraWidget(
+                  showCamera: _showCamera,
+                  onImage: _onCameraImage,
+                ),
 
-                  // Overlay painter (only if we have a pose + image size)
-                  if (_latestPose != null &&
-                      _imageWidth != null &&
-                      _imageHeight != null)
-                    Positioned.fill(
-                      child: CustomPaint(
-                        painter: _ShoulderPressPainter(
-                          pose: _latestPose!,
-                          imageWidth: _imageWidth!,
-                          imageHeight: _imageHeight!,
-                          leftElbow: _leftElbow,
-                          rightElbow: _rightElbow,
-                          avgElbow: _avgElbow,
-                          trunkAngle: _trunkAngle,
-                          postureGood: _postureGood,
-                          rotation: _rotation,
-                          mirror: false, // non-mirrored preview → false
-                        ),
+                // Pose overlay painter
+                if (_latestPose != null &&
+                    _imageWidth != null &&
+                    _imageHeight != null)
+                  Positioned.fill(
+                    child: CustomPaint(
+                      painter: _ShoulderPressPainter(
+                        pose: _latestPose!,
+                        imageWidth: _imageWidth!,
+                        imageHeight: _imageHeight!,
+                        leftElbow: _leftElbow,
+                        rightElbow: _rightElbow,
+                        avgElbow: _avgElbow,
+                        trunkAngle: _trunkAngle,
+                        postureGood: _postureGood,
+                        rotation: _rotation,
+                        mirror: false,
                       ),
                     ),
+                  ),
 
-                  // HUD
-                  Positioned(
-                    top: 16,
-                    left: 16,
-                    right: 16,
-                    child: Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: Colors.black54,
-                        border: Border.all(color: hudColor, width: 2),
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: DefaultTextStyle(
-                        style: const TextStyle(color: Colors.white),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
+                // HUD with metrics and ML predictions
+                Positioned(
+                  top: 16,
+                  left: 16,
+                  right: 16,
+                  child: Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.black54,
+                      border: Border.all(color: hudColor, width: 2),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: DefaultTextStyle(
+                      style: const TextStyle(color: Colors.white),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'State: $_state   Reps: $_reps',
+                            style: const TextStyle(
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          if (_avgElbow != null)
                             Text(
-                              'State: $_state   Reps: $_reps',
-                              style: const TextStyle(
+                              'Avg Elbow: ${_avgElbow!.toStringAsFixed(0)}°',
+                            ),
+                          if (_leftElbow != null && _rightElbow != null)
+                            Text(
+                              'L/R Elbow: ${_leftElbow!.toStringAsFixed(0)}° / ${_rightElbow!.toStringAsFixed(0)}°',
+                            ),
+                          if (_trunkAngle != null)
+                            Text(
+                              'Trunk: ${_trunkAngle!.toStringAsFixed(0)}°',
+                            ),
+                          
+                          // ML prediction display
+                          if (_classifierReady) ...[
+                            const Divider(color: Colors.white24, height: 12),
+                            Text(
+                              'ML Form: $_mlLabel',
+                              style: TextStyle(
+                                color: _mlGoodForm 
+                                    ? Colors.greenAccent 
+                                    : Colors.orangeAccent,
                                 fontWeight: FontWeight.bold,
                               ),
                             ),
-                            if (_avgElbow != null)
+                            if (_mlConfidence > 0)
                               Text(
-                                'Avg Elbow: ${_avgElbow!.toStringAsFixed(0)}°',
+                                'Confidence: ${(_mlConfidence * 100).toStringAsFixed(1)}%',
+                                style: const TextStyle(fontSize: 12),
                               ),
-                            if (_leftElbow != null && _rightElbow != null)
-                              Text(
-                                'L/R Elbow: ${_leftElbow!.toStringAsFixed(0)}° / ${_rightElbow!.toStringAsFixed(0)}°',
-                              ),
-                            if (_trunkAngle != null)
-                              Text(
-                                'Trunk: ${_trunkAngle!.toStringAsFixed(0)}°',
-                              ),
-                            Text(
-                              _postureStatus,
-                              style: TextStyle(
-                                color: hudColor,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                            const SizedBox(height: 4),
-                            Text(
-                              _feedback,
-                              style: TextStyle(
-                                color:
-                                    _postureGood
-                                        ? Colors.greenAccent
-                                        : Colors.orangeAccent,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
                           ],
-                        ),
+                          
+                          const Divider(color: Colors.white24, height: 12),
+                          Text(
+                            _postureStatus,
+                            style: TextStyle(
+                              color: hudColor,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            _feedback,
+                            style: TextStyle(
+                              color: _postureGood
+                                  ? Colors.greenAccent
+                                  : Colors.orangeAccent,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ),
-                ],
-              )
-              : const Center(child: Text('Camera off')),
+                ),
+              ],
+            )
+          : const Center(child: Text('Camera off')),
     );
   }
 }
@@ -454,8 +590,8 @@ class _ShoulderPressPainter extends CustomPainter {
     final scaleY = size.height / effH;
 
     Offset mapPoint(double x, double y) {
-      final mappedX = size.width - (x * scaleX); // always flip X
-      final mappedY = y * scaleY; // keep Y as-is (no flip)
+      final mappedX = size.width - (x * scaleX);
+      final mappedY = y * scaleY;
       return Offset(mappedX, mappedY);
     }
 
@@ -472,19 +608,17 @@ class _ShoulderPressPainter extends CustomPainter {
       [PoseLandmarkType.rightShoulder, PoseLandmarkType.rightHip],
     ];
 
-    final linePaint =
-        Paint()
-          ..color = Colors.white
-          ..strokeWidth = 2
-          ..style = PaintingStyle.stroke
-          ..strokeCap = StrokeCap.round;
+    final linePaint = Paint()
+      ..color = Colors.white
+      ..strokeWidth = 2
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round;
 
-    final jointPaint =
-        Paint()
-          ..color = postureGood ? Colors.greenAccent : Colors.redAccent
-          ..style = PaintingStyle.fill;
+    final jointPaint = Paint()
+      ..color = postureGood ? Colors.greenAccent : Colors.redAccent
+      ..style = PaintingStyle.fill;
 
-    // Lines
+    // Draw skeleton lines
     for (final pair in connections) {
       final a = lm[pair[0]];
       final b = lm[pair[1]];
@@ -492,12 +626,12 @@ class _ShoulderPressPainter extends CustomPainter {
       canvas.drawLine(mapPoint(a.x, a.y), mapPoint(b.x, b.y), linePaint);
     }
 
-    // Joints
+    // Draw joints
     for (final l in lm.values) {
       canvas.drawCircle(mapPoint(l.x, l.y), 6, jointPaint);
     }
 
-    // Angle labels near elbows + avg near shoulders
+    // Draw angle labels
     final le = lm[PoseLandmarkType.leftElbow];
     final re = lm[PoseLandmarkType.rightElbow];
     final ls = lm[PoseLandmarkType.leftShoulder];

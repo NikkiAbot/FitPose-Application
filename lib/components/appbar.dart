@@ -10,7 +10,6 @@ class Header extends StatelessWidget implements PreferredSizeWidget {
     this.showBackButton = false,
     this.backButtonColor = Colors.white,
   });
-
   @override
   Widget build(BuildContext context) {
     return AppBar(

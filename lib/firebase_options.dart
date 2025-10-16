@@ -75,7 +75,7 @@ class DefaultFirebaseOptions {
     storageBucket: 'fitpose-44abc.firebasestorage.app',
     iosBundleId: 'com.example.flutterFitpose',
   );
-
+  
   static const FirebaseOptions windows = FirebaseOptions(
     apiKey: 'AIzaSyAUNKS7G6bjiF_k5MAIWBGwX4rZ6GS2l2Q',
     appId: '1:154988354919:web:e9fd91c2f47d07b60823c2',

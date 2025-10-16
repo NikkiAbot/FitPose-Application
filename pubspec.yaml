@@ -86,6 +86,10 @@ flutter:
     - lib/images/
     - assets/form_knn.onnx
     - assets/form_labels.json
+    - assets/models/scaler_params.json
+    - assets/models/label_encoder.json
+    - assets/models/shoulder_press_model.onnx
+    
   #   - images/a_dot_ham.jpeg
 
   # An image asset can refer to one or more resolution-specific "variants", see

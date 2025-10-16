@@ -17,7 +17,8 @@ class CameraWidget extends StatefulWidget {
     CameraImage image,
     int rotationDegrees,
     bool isFrontCamera,
-  )? onImage;
+  )?
+  onImage;
 
   /// If provided, the value (0/90/180/270) is passed to onImage every frame.
   /// This bypasses device/sensor rotation logic for stability.
@@ -43,7 +44,8 @@ class CameraWidget extends StatefulWidget {
   State<CameraWidget> createState() => _CameraWidgetState();
 }
 
-class _CameraWidgetState extends State<CameraWidget> with WidgetsBindingObserver {
+class _CameraWidgetState extends State<CameraWidget>
+    with WidgetsBindingObserver {
   CameraController? _controller;
   List<CameraDescription> _cameras = const [];
 
@@ -108,17 +110,16 @@ class _CameraWidgetState extends State<CameraWidget> with WidgetsBindingObserver
       if (widget.showCamera) _startStreamIfNeeded();
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Camera error: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Camera error: $e')));
     }
   }
 
   Future<void> _startWithDescription(CameraDescription desc) async {
     // ML Kit–friendly formats
-    final imgFormat = Platform.isIOS
-        ? ImageFormatGroup.bgra8888
-        : ImageFormatGroup.yuv420;
+    final imgFormat =
+        Platform.isIOS ? ImageFormatGroup.bgra8888 : ImageFormatGroup.yuv420;
 
     await _controller?.dispose();
 
@@ -141,7 +142,8 @@ class _CameraWidgetState extends State<CameraWidget> with WidgetsBindingObserver
       }
     }
 
-    _isFrontCamera = controller.description.lensDirection == CameraLensDirection.front;
+    _isFrontCamera =
+        controller.description.lensDirection == CameraLensDirection.front;
   }
 
   void _startStreamIfNeeded() {
@@ -196,8 +198,6 @@ class _CameraWidgetState extends State<CameraWidget> with WidgetsBindingObserver
       case DeviceOrientation.landscapeRight:
         device = 90;
         break;
-      default:
-        device = 0;
     }
     int rot = (sensor - device) % 360;
     if (rot < 0) rot += 360;
@@ -227,13 +227,20 @@ class _CameraWidgetState extends State<CameraWidget> with WidgetsBindingObserver
   Widget build(BuildContext context) {
     final ctrl = _controller;
 
-    if (!widget.showCamera || !_initialized || ctrl == null || !ctrl.value.isInitialized) {
-      return const SizedBox.expand(child: Center(child: CircularProgressIndicator()));
+    if (!widget.showCamera ||
+        !_initialized ||
+        ctrl == null ||
+        !ctrl.value.isInitialized) {
+      return const SizedBox.expand(
+        child: Center(child: CircularProgressIndicator()),
+      );
     }
 
     final size = ctrl.value.previewSize;
     if (size == null) {
-      return const SizedBox.expand(child: Center(child: CircularProgressIndicator()));
+      return const SizedBox.expand(
+        child: Center(child: CircularProgressIndicator()),
+      );
     }
 
     // Size from plugin is sensor coords; swap for portrait display
@@ -270,7 +277,7 @@ class _CameraWidgetState extends State<CameraWidget> with WidgetsBindingObserver
             right: 12,
             bottom: 20,
             child: Material(
-              color: Colors.black.withOpacity(0.35),
+              color: Colors.black.withValues(alpha: 0.35),
               shape: const CircleBorder(),
               child: IconButton(
                 tooltip: 'Switch camera',

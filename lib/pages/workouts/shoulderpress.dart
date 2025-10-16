@@ -42,8 +42,8 @@ class _ShoulderPressPageState extends State<ShoulderPressPage> {
   String _state = 'waiting'; // waiting | lowered | raised
   bool _anomaly = false;
 
-  static const double loweredThresh = 90;   // down
-  static const double raisedThresh  = 160;  // up
+  static const double loweredThresh = 90; // down
+  static const double raisedThresh = 160; // up
   static const double maxTorsoLeanDeg = 15; // posture tolerance
   static const double maxAsymmetryDeg = 12; // elbows diff
 
@@ -53,7 +53,9 @@ class _ShoulderPressPageState extends State<ShoulderPressPage> {
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _showInstructionsDialog());
+    WidgetsBinding.instance.addPostFrameCallback(
+      (_) => _showInstructionsDialog(),
+    );
   }
 
   @override
@@ -134,15 +136,22 @@ class _ShoulderPressPageState extends State<ShoulderPressPage> {
 
     int outIndex = 0;
     for (int row = 0; row < height; row++) {
-      out.setRange(outIndex, outIndex + width, yPlane.bytes, row * yPlane.bytesPerRow);
+      out.setRange(
+        outIndex,
+        outIndex + width,
+        yPlane.bytes,
+        row * yPlane.bytesPerRow,
+      );
       outIndex += width;
     }
 
     int chromaOut = ySize;
     for (int row = 0; row < chromaHeight; row++) {
       for (int col = 0; col < chromaWidth; col++) {
-        final uIndex = row * uPlane.bytesPerRow + col * (uPlane.bytesPerPixel ?? 1);
-        final vIndex = row * vPlane.bytesPerRow + col * (vPlane.bytesPerPixel ?? 1);
+        final uIndex =
+            row * uPlane.bytesPerRow + col * (uPlane.bytesPerPixel ?? 1);
+        final vIndex =
+            row * vPlane.bytesPerRow + col * (vPlane.bytesPerPixel ?? 1);
         out[chromaOut++] = vPlane.bytes[vIndex];
         out[chromaOut++] = uPlane.bytes[uIndex];
       }
@@ -202,14 +211,18 @@ class _ShoulderPressPageState extends State<ShoulderPressPage> {
     final midSh = Offset((ls.x + rs.x) / 2, (ls.y + rs.y) / 2);
     final midHp = Offset((lh!.x + rh!.x) / 2, (lh.y + rh.y) / 2);
     final torsoVec = midSh - midHp;
-    _trunkAngle = (180 / math.pi) * math.atan2(torsoVec.dx.abs(), torsoVec.dy.abs());
+    _trunkAngle =
+        (180 / math.pi) * math.atan2(torsoVec.dx.abs(), torsoVec.dy.abs());
 
     // Posture quality
     final elbowsDiff = ((_leftElbow ?? 0) - (_rightElbow ?? 0)).abs();
     final upright = _trunkAngle! < maxTorsoLeanDeg;
     final symmetric = elbowsDiff < maxAsymmetryDeg;
     _postureGood = upright && symmetric;
-    _postureStatus = _postureGood ? 'Good Posture' : (!upright ? 'Don’t arch/lean' : 'Keep arms symmetric');
+    _postureStatus =
+        _postureGood
+            ? 'Good Posture'
+            : (!upright ? 'Don’t arch/lean' : 'Keep arms symmetric');
 
     // FSM transitions
     if (_state == 'waiting') {
@@ -249,33 +262,40 @@ class _ShoulderPressPageState extends State<ShoulderPressPage> {
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (_) => AlertDialog(
-        title: const Row(
-          children: [
-            Icon(Icons.fitness_center, color: Colors.purple, size: 26),
-            SizedBox(width: 8),
-            Text('Shoulder Press', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-          ],
-        ),
-        content: const SingleChildScrollView(
-          child: Text(
-            '1) Stand tall, feet shoulder-width\n'
-            '2) Palms forward at shoulder level\n'
-            '3) Press straight overhead\n'
-            '4) Keep core braced (no back arch)\n'
-            '5) Lower to shoulder level each rep\n\n'
-            'Camera will track your reps and posture.',
-            style: TextStyle(fontSize: 14, height: 1.5),
+      builder:
+          (_) => AlertDialog(
+            title: const Row(
+              children: [
+                Icon(Icons.fitness_center, color: Colors.purple, size: 26),
+                SizedBox(width: 8),
+                Text(
+                  'Shoulder Press',
+                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                ),
+              ],
+            ),
+            content: const SingleChildScrollView(
+              child: Text(
+                '1) Stand tall, feet shoulder-width\n'
+                '2) Palms forward at shoulder level\n'
+                '3) Press straight overhead\n'
+                '4) Keep core braced (no back arch)\n'
+                '5) Lower to shoulder level each rep\n\n'
+                'Camera will track your reps and posture.',
+                style: TextStyle(fontSize: 14, height: 1.5),
+              ),
+            ),
+            actions: [
+              ElevatedButton(
+                onPressed: () => Navigator.pop(context),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.purple,
+                  foregroundColor: Colors.white,
+                ),
+                child: const Text('Start'),
+              ),
+            ],
           ),
-        ),
-        actions: [
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context),
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.purple, foregroundColor: Colors.white),
-            child: const Text('Start'),
-          ),
-        ],
-      ),
     );
   }
 
@@ -289,80 +309,106 @@ class _ShoulderPressPageState extends State<ShoulderPressPage> {
         backgroundColor: Colors.black.withValues(alpha: 0.7),
         foregroundColor: Colors.white,
         actions: [
-          IconButton(icon: const Icon(Icons.info_outline), onPressed: _showInstructionsDialog),
+          IconButton(
+            icon: const Icon(Icons.info_outline),
+            onPressed: _showInstructionsDialog,
+          ),
         ],
       ),
-      body: _showCamera
-          ? Stack(
-              children: [
-                // Non-mirrored camera (true image)
-                CameraWidget(
-                  showCamera: _showCamera,
-                  onImage: _onCameraImage,
-                  // If you want to hard-lock rotation to 90:
-                  // forcedRotationDegrees: 90,
-                ),
-
-                // Overlay painter (only if we have a pose + image size)
-                if (_latestPose != null && _imageWidth != null && _imageHeight != null)
-                  Positioned.fill(
-                    child: CustomPaint(
-                      painter: _ShoulderPressPainter(
-                        pose: _latestPose!,
-                        imageWidth: _imageWidth!,
-                        imageHeight: _imageHeight!,
-                        leftElbow: _leftElbow,
-                        rightElbow: _rightElbow,
-                        avgElbow: _avgElbow,
-                        trunkAngle: _trunkAngle,
-                        postureGood: _postureGood,
-                        rotation: _rotation,
-                        mirror: false, // non-mirrored preview → false
-                      ),
-                    ),
+      body:
+          _showCamera
+              ? Stack(
+                children: [
+                  // Non-mirrored camera (true image)
+                  CameraWidget(
+                    showCamera: _showCamera,
+                    onImage: _onCameraImage,
+                    // If you want to hard-lock rotation to 90:
+                    // forcedRotationDegrees: 90,
                   ),
 
-                // HUD
-                Positioned(
-                  top: 16,
-                  left: 16,
-                  right: 16,
-                  child: Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: Colors.black54,
-                      border: Border.all(color: hudColor, width: 2),
-                      borderRadius: BorderRadius.circular(12),
+                  // Overlay painter (only if we have a pose + image size)
+                  if (_latestPose != null &&
+                      _imageWidth != null &&
+                      _imageHeight != null)
+                    Positioned.fill(
+                      child: CustomPaint(
+                        painter: _ShoulderPressPainter(
+                          pose: _latestPose!,
+                          imageWidth: _imageWidth!,
+                          imageHeight: _imageHeight!,
+                          leftElbow: _leftElbow,
+                          rightElbow: _rightElbow,
+                          avgElbow: _avgElbow,
+                          trunkAngle: _trunkAngle,
+                          postureGood: _postureGood,
+                          rotation: _rotation,
+                          mirror: false, // non-mirrored preview → false
+                        ),
+                      ),
                     ),
-                    child: DefaultTextStyle(
-                      style: const TextStyle(color: Colors.white),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text('State: $_state   Reps: $_reps', style: const TextStyle(fontWeight: FontWeight.bold)),
-                          if (_avgElbow != null)
-                            Text('Avg Elbow: ${_avgElbow!.toStringAsFixed(0)}°'),
-                          if (_leftElbow != null && _rightElbow != null)
-                            Text('L/R Elbow: ${_leftElbow!.toStringAsFixed(0)}° / ${_rightElbow!.toStringAsFixed(0)}°'),
-                          if (_trunkAngle != null)
-                            Text('Trunk: ${_trunkAngle!.toStringAsFixed(0)}°'),
-                          Text(_postureStatus, style: TextStyle(color: hudColor, fontWeight: FontWeight.w600)),
-                          const SizedBox(height: 4),
-                          Text(
-                            _feedback,
-                            style: TextStyle(
-                              color: _postureGood ? Colors.greenAccent : Colors.orangeAccent,
-                              fontWeight: FontWeight.w600,
+
+                  // HUD
+                  Positioned(
+                    top: 16,
+                    left: 16,
+                    right: 16,
+                    child: Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.black54,
+                        border: Border.all(color: hudColor, width: 2),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: DefaultTextStyle(
+                        style: const TextStyle(color: Colors.white),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'State: $_state   Reps: $_reps',
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                              ),
                             ),
-                          ),
-                        ],
+                            if (_avgElbow != null)
+                              Text(
+                                'Avg Elbow: ${_avgElbow!.toStringAsFixed(0)}°',
+                              ),
+                            if (_leftElbow != null && _rightElbow != null)
+                              Text(
+                                'L/R Elbow: ${_leftElbow!.toStringAsFixed(0)}° / ${_rightElbow!.toStringAsFixed(0)}°',
+                              ),
+                            if (_trunkAngle != null)
+                              Text(
+                                'Trunk: ${_trunkAngle!.toStringAsFixed(0)}°',
+                              ),
+                            Text(
+                              _postureStatus,
+                              style: TextStyle(
+                                color: hudColor,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              _feedback,
+                              style: TextStyle(
+                                color:
+                                    _postureGood
+                                        ? Colors.greenAccent
+                                        : Colors.orangeAccent,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                   ),
-                ),
-              ],
-            )
-          : const Center(child: Text('Camera off')),
+                ],
+              )
+              : const Center(child: Text('Camera off')),
     );
   }
 }
@@ -408,8 +454,8 @@ class _ShoulderPressPainter extends CustomPainter {
     final scaleY = size.height / effH;
 
     Offset mapPoint(double x, double y) {
-      final mappedX = mirror ? (size.width - x * scaleX) : (x * scaleX);
-      final mappedY = y * scaleY;
+      final mappedX = size.width - (x * scaleX); // always flip X
+      final mappedY = y * scaleY; // keep Y as-is (no flip)
       return Offset(mappedX, mappedY);
     }
 
@@ -426,15 +472,17 @@ class _ShoulderPressPainter extends CustomPainter {
       [PoseLandmarkType.rightShoulder, PoseLandmarkType.rightHip],
     ];
 
-    final linePaint = Paint()
-      ..color = Colors.white
-      ..strokeWidth = 2
-      ..style = PaintingStyle.stroke
-      ..strokeCap = StrokeCap.round;
+    final linePaint =
+        Paint()
+          ..color = Colors.white
+          ..strokeWidth = 2
+          ..style = PaintingStyle.stroke
+          ..strokeCap = StrokeCap.round;
 
-    final jointPaint = Paint()
-      ..color = postureGood ? Colors.greenAccent : Colors.redAccent
-      ..style = PaintingStyle.fill;
+    final jointPaint =
+        Paint()
+          ..color = postureGood ? Colors.greenAccent : Colors.redAccent
+          ..style = PaintingStyle.fill;
 
     // Lines
     for (final pair in connections) {
@@ -472,14 +520,23 @@ class _ShoulderPressPainter extends CustomPainter {
     }
 
     if (leftElbow != null && le != null) {
-      drawLabel('${leftElbow!.toStringAsFixed(0)}°', mapPoint(le.x, le.y) + const Offset(8, -20));
+      drawLabel(
+        '${leftElbow!.toStringAsFixed(0)}°',
+        mapPoint(le.x, le.y) + const Offset(8, -20),
+      );
     }
     if (rightElbow != null && re != null) {
-      drawLabel('${rightElbow!.toStringAsFixed(0)}°', mapPoint(re.x, re.y) + const Offset(8, -20));
+      drawLabel(
+        '${rightElbow!.toStringAsFixed(0)}°',
+        mapPoint(re.x, re.y) + const Offset(8, -20),
+      );
     }
     if (avgElbow != null && ls != null && rs != null) {
       final mid = Offset((ls.x + rs.x) / 2, (ls.y + rs.y) / 2);
-      drawLabel('AVG ${avgElbow!.toStringAsFixed(0)}°', mapPoint(mid.dx, mid.dy) + const Offset(8, -24));
+      drawLabel(
+        'AVG ${avgElbow!.toStringAsFixed(0)}°',
+        mapPoint(mid.dx, mid.dy) + const Offset(8, -24),
+      );
     }
 
     canvas.restore();

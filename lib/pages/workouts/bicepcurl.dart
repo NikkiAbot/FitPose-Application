@@ -1,10 +1,14 @@
 import 'dart:math' as math;
+import 'dart:collection'; // For Queue
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
 
 import '../../components/camera_widget.dart';
+import '../../models/bicepcurl_feature_extract.dart';
+import '../../models/bicep_knn_classifier.dart';
 
 class BicepCurl extends StatefulWidget {
   const BicepCurl({super.key});
@@ -16,7 +20,10 @@ class BicepCurl extends StatefulWidget {
 class _BicepCurlState extends State<BicepCurl> {
   final _showCamera = true;
   late final PoseDetector _poseDetector = PoseDetector(
-    options: PoseDetectorOptions(mode: PoseDetectionMode.stream),
+    options: PoseDetectorOptions(
+      mode: PoseDetectionMode.stream,
+      model: PoseDetectionModel.accurate,
+    ),
   );
 
   bool _isProcessing = false;
@@ -28,33 +35,80 @@ class _BicepCurlState extends State<BicepCurl> {
 
   double? _elbowAngle;
   double? _torsoAngle;
+  double? _dx;
   String _feedback = 'Face camera and start';
   String _postureStatus = 'Tracking...';
   bool _postureGood = false;
 
   int _curlReps = 0;
-  bool _inRep = false;
-  bool _fullyContracted = false;
-  bool _repPostureGood = true;
 
-  static const double extendedAngleThreshold = 160;
-  static const double contractedAngleThreshold = 60;
-  static const double deepContractAngle = 50;
-  static const double maxTorsoLeanDeg = 20;
+  // ═══════════════════════════════════════════════════════════════
+  // ML CLASSIFIER
+  // ═══════════════════════════════════════════════════════════════
+  final BicepKNNClassifier _classifier = BicepKNNClassifier();
+  bool _classifierReady = false;
+  String _mlLabel = 'neutral';
+  double _mlConfidence = 0.0;
+
+  // ═══════════════════════════════════════════════════════════════
+  // SMOOTHING BUFFERS (W=5 frames, matching Python)
+  // ═══════════════════════════════════════════════════════════════
+  static const int bufferSize = 5;
+  final Queue<double> _dxBuffer = Queue();
+  final Queue<double> _inclBuffer = Queue();
+  final Queue<double> _angBuffer = Queue();
+  final Queue<double> _velBuffer = Queue();
+  final Queue<double> _whBuffer = Queue();
+  final Queue<double> _mcBuffer = Queue();
+  final Queue<double> _romBuffer = Queue();
+
+  // For velocity calculation
+  double? _previousAngle;
+  double _previousTime = 0.0;
+
+  // ═══════════════════════════════════════════════════════════════
+  // THRESHOLDS (exactly matching Python)
+  // ═══════════════════════════════════════════════════════════════
+  static const double swingThreshold = 0.06;    // SWING_TH
+  static const double leanThreshold = -165.0;   // LEAN_TH
+  static const double downThreshold = 75.0;     // DOWN_TH
+  static const double upThreshold = 149.0;      // UP_TH
 
   InputImageRotation _rotation = InputImageRotation.rotation270deg;
+
+  // ═══════════════════════════════════════════════════════════════
+  // FSM STATE TRACKING (matching Python exactly)
+  // state, cycle_ok, reps = "extended", False, 0
+  // ═══════════════════════════════════════════════════════════════
+  String _fsmState = 'extended'; // 'extended' or 'flexed'
+  bool _cycleOk = false;
+  String _instruction = 'neutral';
 
   @override
   void initState() {
     super.initState();
+    _initializeClassifier();
     WidgetsBinding.instance.addPostFrameCallback(
       (_) => _showInstructionsDialog(),
     );
   }
 
+  Future<void> _initializeClassifier() async {
+    await _classifier.initialize();
+    if (mounted) {
+      setState(() {
+        _classifierReady = _classifier.isReady;
+      });
+    }
+    if (kDebugMode) {
+      print('[Bicep] Classifier ready: $_classifierReady');
+    }
+  }
+
   @override
   void dispose() {
     _poseDetector.close();
+    _classifier.dispose();
     super.dispose();
   }
 
@@ -68,7 +122,6 @@ class _BicepCurlState extends State<BicepCurl> {
     _isProcessing = true;
     _lastProcessMs = now;
 
-    // ✅ Lock rotation for portrait orientation (front camera)
     _rotation = InputImageRotation.rotation270deg;
 
     _processPose(image).whenComplete(() {
@@ -105,7 +158,7 @@ class _BicepCurlState extends State<BicepCurl> {
       _latestPose = poses.first;
       _analyzePose(_latestPose!);
     } catch (e) {
-      if (kDebugMode) print('[Pose] Exception: $e');
+      if (kDebugMode) print('[Bicep] Error processing pose: $e');
       _latestPose = null;
       _feedback = 'Error processing frame';
       _postureStatus = 'Tracking...';
@@ -113,7 +166,6 @@ class _BicepCurlState extends State<BicepCurl> {
     }
   }
 
-  // RULES
   Uint8List _yuv420ToNv21(CameraImage image) {
     final width = image.width;
     final height = image.height;
@@ -152,142 +204,274 @@ class _BicepCurlState extends State<BicepCurl> {
     return out;
   }
 
-  double _angle(Offset a, Offset b, Offset c) {
-    a = Offset(a.dx, -a.dy);
-    b = Offset(b.dx, -b.dy);
-    c = Offset(c.dx, -c.dy);
-
-    final ab = a - b;
-    final cb = c - b;
-    final dot = ab.dx * cb.dx + ab.dy * cb.dy;
-    final denom = ab.distance * cb.distance;
-    if (denom == 0) return 0;
-    final cosv = (dot / denom).clamp(-1.0, 1.0);
-    return (180 / math.pi) * math.acos(cosv);
-  }
-
   void _analyzePose(Pose pose) {
     final lm = pose.landmarks;
     final shoulderR = lm[PoseLandmarkType.rightShoulder];
     final elbowR = lm[PoseLandmarkType.rightElbow];
     final wristR = lm[PoseLandmarkType.rightWrist];
     final hipR = lm[PoseLandmarkType.rightHip];
-    final shoulderL = lm[PoseLandmarkType.leftShoulder];
-    final hipL = lm[PoseLandmarkType.leftHip];
 
     if (shoulderR == null || elbowR == null || wristR == null || hipR == null) {
       _feedback = 'Move into view';
       _postureStatus = 'Tracking...';
       _postureGood = false;
+      _mlLabel = 'neutral';
+      _instruction = 'neutral';
       return;
     }
 
-    _elbowAngle = _angle(
-      Offset(shoulderR.x, shoulderR.y),
-      Offset(elbowR.x, elbowR.y),
-      Offset(wristR.x, wristR.y),
+    // ═══════════════════════════════════════════════════════════════
+    // 1) RAW FEATURES (matching Python step 1)
+    // ═══════════════════════════════════════════════════════════════
+    
+    final currentTime = DateTime.now().millisecondsSinceEpoch / 1000.0;
+    
+    final features = BicepCurlFeatureExtractor.extractFeatures(
+      lm,
+      _previousAngle ?? 0.0,
+      _previousTime,
+      currentTime,
     );
 
-    if (shoulderL != null && hipL != null) {
-      final avgShoulder = Offset(
-        (shoulderL.x + shoulderR.x) / 2,
-        (shoulderL.y + shoulderR.y) / 2,
-      );
-      final avgHip = Offset((hipL.x + hipR.x) / 2, (hipL.y + hipR.y) / 2);
-      final torsoVec = avgShoulder - avgHip;
-      _torsoAngle =
-          (180 / math.pi) * math.atan2(torsoVec.dx.abs(), torsoVec.dy.abs());
-      _postureGood = _torsoAngle! < maxTorsoLeanDeg;
-      _postureStatus = _postureGood ? 'Good Posture' : 'Don’t lean forward';
+    // Update for next frame
+    _previousAngle = features[0]; // elbow angle
+    _previousTime = currentTime;
+
+    // ═══════════════════════════════════════════════════════════════
+    // 3) SMOOTH INTO BUFFERS (matching Python step 3)
+    // for k,v in (("dx",dx),("incl",incl),("ang",ang),("vel",vel),("wh",wh)):
+    //     bufs[k].append(v)
+    // ═══════════════════════════════════════════════════════════════
+    
+    _addToBuffer(_angBuffer, features[0]);   // ang
+    _addToBuffer(_dxBuffer, features[1]);    // dx
+    _addToBuffer(_inclBuffer, features[2]);  // incl
+    _addToBuffer(_velBuffer, features[3]);   // vel
+    _addToBuffer(_whBuffer, features[4]);    // wh
+
+    // Calculate MC and ROM from angle buffer (matching Python logic)
+    // arr = np.array(bufs["ang"])
+    // bufs["mc"].append(1 - (np.std(arr)/(arr.ptp()+1e-6)))
+    // bufs["rom"].append(arr.ptp())
+    if (_angBuffer.length >= 2) {
+      final angleList = _angBuffer.toList();
+      final angleStd = _calculateStd(angleList);
+      final angleRange = _calculateRange(angleList);
+      final mc = 1.0 - (angleStd / (angleRange + 1e-6));
+      _addToBuffer(_mcBuffer, mc);
+      _addToBuffer(_romBuffer, angleRange);
     }
 
-    (180 - _elbowAngle!).clamp(0, 140);
+    // ═══════════════════════════════════════════════════════════════
+    // 4) SMOOTHED SIGNALS (matching Python step 4)
+    // dx_s, incl_s, ang_s = (np.mean(bufs[k]) for k in ("dx","incl","ang"))
+    // ═══════════════════════════════════════════════════════════════
+    
+    final angSmooth = _getBufferMean(_angBuffer);
+    final dxSmooth = _getBufferMean(_dxBuffer);
+    final inclSmooth = _getBufferMean(_inclBuffer);
+    final velSmooth = _getBufferMean(_velBuffer);
+    final whSmooth = _getBufferMean(_whBuffer);
+    final mcSmooth = _getBufferMean(_mcBuffer);
+    final romSmooth = _getBufferMean(_romBuffer);
 
-    if (!_inRep && _elbowAngle! < extendedAngleThreshold - 10) {
-      _inRep = true;
-      _fullyContracted = false;
-      _repPostureGood = _postureGood;
+    // Update display values
+    _elbowAngle = angSmooth;
+    _torsoAngle = inclSmooth;
+    _dx = dxSmooth;
+
+    // Debug print (matching Python)
+    if (kDebugMode) {
+      print('DEBUG → incl_s=${inclSmooth.toStringAsFixed(1)}, '
+            'dx_s=${dxSmooth.toStringAsFixed(3)}, '
+            'ang_s=${angSmooth.toStringAsFixed(1)}');
     }
 
-    if (_inRep) {
-      _repPostureGood &= _postureGood;
-
-      if (!_fullyContracted && _elbowAngle! <= contractedAngleThreshold) {
-        _fullyContracted = true;
-      }
-
-      if (_fullyContracted && _elbowAngle! >= extendedAngleThreshold) {
-        if (_repPostureGood) {
-          _curlReps += 1;
-          _feedback = 'Nice curl!';
-        } else {
-          _feedback = 'Keep torso stable!';
-        }
-        _inRep = false;
-      } else {
-        if (_elbowAngle! > 150) {
-          _feedback = 'Start curling';
-        } else if (_elbowAngle! > 100) {
-          _feedback = 'Keep curling';
-        } else if (_elbowAngle! > deepContractAngle) {
-          _feedback = 'Almost there!';
-        } else {
-          _feedback = _postureGood ? 'Hold contraction' : 'Don’t swing!';
-        }
-      }
+    // ═══════════════════════════════════════════════════════════════
+    // 5) PROMPT RAISE/LOWER (matching Python step 5)
+    // if ang_s > UP_TH: instruction = "Raise weight fully"
+    // elif ang_s < DOWN_TH: instruction = "Lower weight fully"
+    // ═══════════════════════════════════════════════════════════════
+    
+    if (angSmooth > upThreshold) {
+      _instruction = 'Lower weight fully';
+    } else if (angSmooth < downThreshold) {
+      _instruction = 'Raise weight fully';
     } else {
-      _feedback = 'Start curling';
+      _instruction = 'neutral';
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // 6) THRESHOLD SHORTCUTS (highest priority) - matching Python step 6
+    // if dx_s > SWING_TH: form_label = "swing"
+    // elif incl_s < LEAN_TH: form_label = "lean"
+    // ═══════════════════════════════════════════════════════════════
+    
+    String formLabel = 'neutral';
+    
+    if (dxSmooth > swingThreshold) {
+      formLabel = 'swing';
+      _mlLabel = 'swing';
+      _postureGood = false;
+      _postureStatus = 'Stop swinging!';
+    } else if (inclSmooth < leanThreshold) {
+      formLabel = 'lean';
+      _mlLabel = 'lean';
+      _postureGood = false;
+      _postureStatus = 'Don\'t lean forward!';
+    } else {
+      // ═══════════════════════════════════════════════════════════════
+      // 7) ML FALLBACK (matching Python step 7)
+      // feats = np.array([[ang_s, dx_s, incl_s, vel_s, wh_s, mc_s, rom_s]])
+      // feats_sc = scaler.transform(feats)
+      // idx = model.predict(feats_sc)[0]
+      // form_label = label_encoder.inverse_transform([idx])[0]
+      // ═══════════════════════════════════════════════════════════════
+      
+      if (_classifierReady && _mcBuffer.length >= bufferSize) {
+        final smoothedFeatures = [
+          angSmooth,
+          dxSmooth,
+          inclSmooth,
+          velSmooth,
+          whSmooth,
+          mcSmooth,
+          romSmooth,
+        ];
+
+        final prediction = _classifier.predict(smoothedFeatures);
+        _mlLabel = prediction['label'];
+        _mlConfidence = prediction['confidence'];
+        formLabel = _mlLabel;
+
+        if (kDebugMode) {
+          print('[ML] $_mlLabel @ ${(_mlConfidence * 100).toStringAsFixed(1)}%');
+        }
+
+        // Update posture status based on ML prediction
+        if (_mlLabel == 'good') {
+          _postureGood = true;
+          _postureStatus = 'Good Form ✓';
+        } else if (_mlLabel == 'half_rep') {
+          _postureGood = false;
+          _postureStatus = 'Complete full range!';
+        } else {
+          _postureGood = false;
+          _postureStatus = 'Fix form: $_mlLabel';
+        }
+      } else {
+        // Classifier not ready yet
+        formLabel = 'neutral';
+        _mlLabel = 'neutral';
+        _postureGood = true;
+        _postureStatus = 'Tracking...';
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // 8) FSM & REP-COUNT (matching Python step 8 exactly)
+    // if state=="extended" and ang_s<DOWN_TH:
+    //     cycle_ok = True
+    //     state = "flexed"
+    // elif state=="flexed":
+    //     if incl_s<LEAN_TH or dx_s>SWING_TH or form_label!="good":
+    //         cycle_ok = False
+    //     if ang_s>UP_TH:
+    //         if cycle_ok:
+    //             reps += 1
+    //         state = "extended"
+    //         cycle_ok = False
+    // ═══════════════════════════════════════════════════════════════
+    
+    // State transition: extended → flexed (lowering phase starts)
+    if (_fsmState == 'extended' && angSmooth < downThreshold) {
+      _cycleOk = true;
+      _fsmState = 'flexed';
+      if (kDebugMode) print('[FSM] extended → flexed');
+    } 
+    // State: flexed (during curl)
+    else if (_fsmState == 'flexed') {
+      // Check form during flexed phase
+      if (inclSmooth < leanThreshold || 
+          dxSmooth > swingThreshold || 
+          formLabel != 'good') {
+        _cycleOk = false;
+      }
+      
+      // State transition: flexed → extended (raising phase completes)
+      if (angSmooth > upThreshold) {
+        if (_cycleOk) {
+          _curlReps += 1;
+          _feedback = 'Rep ✓';
+          if (kDebugMode) print('[FSM] ✅ Rep counted! Total: $_curlReps');
+        } else {
+          _feedback = 'Fix form';
+          if (kDebugMode) print('[FSM] ❌ Rep NOT counted (bad form)');
+        }
+        _fsmState = 'extended';
+        _cycleOk = false;
+        if (kDebugMode) print('[FSM] flexed → extended');
+      }
+    }
+
+    // Update feedback based on current state
+    if (_fsmState == 'flexed' && angSmooth <= upThreshold) {
+      if (angSmooth > 100) {
+        _feedback = 'Keep curling';
+      } else if (angSmooth > 60) {
+        _feedback = 'Almost there!';
+      } else {
+        _feedback = _postureGood ? 'Hold!' : 'Fix form!';
+      }
+    } else if (_fsmState == 'extended' && angSmooth >= downThreshold) {
+      _feedback = 'Start curl';
     }
   }
 
-  void _showInstructionsDialog() {
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder:
-          (_) => AlertDialog(
-            title: const Row(
-              children: [
-                Icon(Icons.fitness_center, color: Colors.indigo, size: 26),
-                SizedBox(width: 8),
-                Text(
-                  'Bicep Curl',
-                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-                ),
-              ],
-            ),
-            content: const SingleChildScrollView(
-              child: Text(
-                '1. Stand straight, hold imaginary dumbbells\n'
-                '2. Keep your elbows close to your torso\n'
-                '3. Curl your forearm up to shoulder height\n'
-                '4. Lower down slowly\n'
-                '5. Avoid swinging or leaning\n\n'
-                'Camera will guide your reps and form.',
-                style: TextStyle(fontSize: 14, height: 1.5),
-              ),
-            ),
-            actions: [
-              ElevatedButton(
-                onPressed: () => Navigator.pop(context),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.indigo,
-                  foregroundColor: Colors.white,
-                ),
-                child: const Text('Start'),
-              ),
-            ],
-          ),
-    );
+  // ═══════════════════════════════════════════════════════════════
+  // HELPER METHODS FOR SMOOTHING
+  // ═══════════════════════════════════════════════════════════════
+  
+  void _addToBuffer(Queue<double> buffer, double value) {
+    buffer.add(value);
+    if (buffer.length > bufferSize) {
+      buffer.removeFirst();
+    }
   }
+
+  double _getBufferMean(Queue<double> buffer) {
+    if (buffer.isEmpty) return 0.0;
+    return buffer.reduce((a, b) => a + b) / buffer.length;
+  }
+
+  double _calculateStd(List<double> values) {
+    if (values.length < 2) return 0.0;
+    final mean = values.reduce((a, b) => a + b) / values.length;
+    final variance = values
+        .map((v) => (v - mean) * (v - mean))
+        .reduce((a, b) => a + b) / values.length;
+    return math.sqrt(variance);
+  }
+
+  double _calculateRange(List<double> values) {
+    if (values.isEmpty) return 0.0;
+    final min = values.reduce(math.min);
+    final max = values.reduce(math.max);
+    return max - min;
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // UI BUILD METHOD (matching shoulder press styling)
+  // ═══════════════════════════════════════════════════════════════
 
   @override
   Widget build(BuildContext context) {
     final hudColor = _postureGood ? Colors.green : Colors.redAccent;
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Bicep Curl'),
-        backgroundColor: Colors.black.withValues(alpha: 0.7),
+        backgroundColor: Colors.black.withOpacity(0.7),
         foregroundColor: Colors.white,
         actions: [
           IconButton(
@@ -296,89 +480,206 @@ class _BicepCurlState extends State<BicepCurl> {
           ),
         ],
       ),
-      body:
-          _showCamera
-              ? Stack(
-                children: [
-                  CameraWidget(
-                    showCamera: _showCamera,
-                    onImage: _onCameraImage,
-                  ),
-                  if (_latestPose != null &&
-                      _imageWidth != null &&
-                      _imageHeight != null)
-                    Positioned.fill(
-                      child: CustomPaint(
-                        painter: _BicepCurlPainter(
-                          pose: _latestPose!,
-                          imageWidth: _imageWidth!,
-                          imageHeight: _imageHeight!,
-                          elbowAngle: _elbowAngle,
-                          torsoAngle: _torsoAngle,
-                          postureGood: _postureGood,
-                          rotation: _rotation,
-                          mirror: true,
-                        ),
+      body: _showCamera
+          ? Stack(
+              children: [
+                // Camera view
+                CameraWidget(
+                  showCamera: _showCamera,
+                  onImage: _onCameraImage,
+                ),
+
+                // Pose overlay painter
+                if (_latestPose != null &&
+                    _imageWidth != null &&
+                    _imageHeight != null)
+                  Positioned.fill(
+                    child: CustomPaint(
+                      painter: _BicepCurlPainter(
+                        pose: _latestPose!,
+                        imageWidth: _imageWidth!,
+                        imageHeight: _imageHeight!,
+                        elbowAngle: _elbowAngle,
+                        torsoAngle: _torsoAngle,
+                        postureGood: _postureGood,
+                        rotation: _rotation,
+                        mirror: false,
                       ),
                     ),
-                  Positioned(
-                    top: 16,
-                    left: 16,
-                    right: 16,
-                    child: Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: Colors.black54,
-                        border: Border.all(color: hudColor, width: 2),
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: DefaultTextStyle(
-                        style: const TextStyle(color: Colors.white),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              'Reps: $_curlReps',
-                              style: const TextStyle(
-                                fontWeight: FontWeight.bold,
-                              ),
+                  ),
+
+                // HUD with metrics and ML predictions (matching shoulder press)
+                Positioned(
+                  top: 16,
+                  left: 16,
+                  right: 16,
+                  child: Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.black54,
+                      border: Border.all(color: hudColor, width: 2),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: DefaultTextStyle(
+                      style: const TextStyle(color: Colors.white),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          // State and reps (matching Python display)
+                          Text(
+                            'State: $_fsmState   Reps: $_curlReps',
+                            style: const TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 15,
                             ),
-                            if (_elbowAngle != null)
-                              Text(
-                                'Elbow: ${_elbowAngle!.toStringAsFixed(0)}°',
-                              ),
-                            if (_torsoAngle != null)
-                              Text(
-                                'Torso: ${_torsoAngle!.toStringAsFixed(0)}°',
-                              ),
+                          ),
+                          
+                          // Angle measurements
+                          if (_elbowAngle != null)
                             Text(
-                              _postureStatus,
+                              'Elbow: ${_elbowAngle!.toStringAsFixed(0)}°',
+                              style: const TextStyle(fontSize: 13),
+                            ),
+                          if (_torsoAngle != null)
+                            Text(
+                              'Torso: ${_torsoAngle!.toStringAsFixed(0)}°',
+                              style: const TextStyle(fontSize: 13),
+                            ),
+                          if (_dx != null)
+                            Text(
+                              'dx: ${_dx!.toStringAsFixed(3)}',
+                              style: const TextStyle(fontSize: 13),
+                            ),
+                          
+                          // ML prediction display (matching shoulder press)
+                          if (_classifierReady) ...[
+                            const Divider(color: Colors.white24, height: 12),
+                            Text(
+                              'Form: $_mlLabel',
                               style: TextStyle(
-                                color: hudColor,
-                                fontWeight: FontWeight.w600,
+                                color: _mlLabel == 'good' 
+                                    ? Colors.greenAccent 
+                                    : Colors.orangeAccent,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 14,
                               ),
                             ),
+                            if (_mlConfidence > 0)
+                              Text(
+                                'Confidence: ${(_mlConfidence * 100).toStringAsFixed(1)}%',
+                                style: const TextStyle(fontSize: 12),
+                              ),
+                          ],
+                          
+                          if (!_classifierReady)
+                            const Text(
+                              'Loading classifier...',
+                              style: TextStyle(
+                                color: Colors.yellowAccent,
+                                fontSize: 12,
+                              ),
+                            ),
+                          
+                          const Divider(color: Colors.white24, height: 12),
+                          
+                          // Posture status
+                          Text(
+                            _postureStatus,
+                            style: TextStyle(
+                              color: hudColor,
+                              fontWeight: FontWeight.w600,
+                              fontSize: 13,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          
+                          // Feedback
+                          Text(
+                            _feedback,
+                            style: TextStyle(
+                              color: _postureGood
+                                  ? Colors.greenAccent
+                                  : Colors.orangeAccent,
+                              fontWeight: FontWeight.w600,
+                              fontSize: 13,
+                            ),
+                          ),
+                          
+                          // Instruction (matching Python)
+                          if (_instruction != 'neutral') ...[
                             const SizedBox(height: 4),
                             Text(
-                              _feedback,
-                              style: TextStyle(
-                                color:
-                                    _postureGood
-                                        ? Colors.greenAccent
-                                        : Colors.orangeAccent,
+                              _instruction,
+                              style: const TextStyle(
+                                color: Colors.yellowAccent,
+                                fontSize: 12,
+                                fontStyle: FontStyle.italic,
                               ),
                             ),
                           ],
-                        ),
+                        ],
                       ),
                     ),
                   ),
-                ],
-              )
-              : const Center(child: Text('Camera off')),
+                ),
+              ],
+            )
+          : const Center(child: Text('Camera off')),
+    );
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // INSTRUCTIONS DIALOG (matching shoulder press style)
+  // ═══════════════════════════════════════════════════════════════
+
+  void _showInstructionsDialog() {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.fitness_center, color: Colors.indigo, size: 26),
+            SizedBox(width: 8),
+            Text(
+              'Bicep Curl',
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+            ),
+          ],
+        ),
+        content: const SingleChildScrollView(
+          child: Text(
+            '1) Stand straight with arms extended\n'
+            '2) Keep elbows close to torso (don\'t swing)\n'
+            '3) Don\'t lean forward or backward\n'
+            '4) Curl forearm up fully\n'
+            '5) Lower down completely\n\n'
+            'States:\n'
+            '• Extended: Arms down (starting position)\n'
+            '• Flexed: Arms curled up\n\n'
+            'Only clean reps with good form count!\n'
+            'Rep counted when transitioning flexed → extended.',
+            style: TextStyle(fontSize: 13, height: 1.5),
+          ),
+        ),
+        actions: [
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.indigo,
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('Start'),
+          ),
+        ],
+      ),
     );
   }
 }
+
+// ═══════════════════════════════════════════════════════════════
+// CUSTOM PAINTER FOR SKELETON OVERLAY (matching shoulder press)
+// ═══════════════════════════════════════════════════════════════
 
 class _BicepCurlPainter extends CustomPainter {
   final Pose pose;
@@ -405,25 +706,23 @@ class _BicepCurlPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     canvas.save();
 
-    final rotated =
-        rotation == InputImageRotation.rotation90deg ||
+    final rotated = rotation == InputImageRotation.rotation90deg ||
         rotation == InputImageRotation.rotation270deg;
     final effW = rotated ? imageHeight : imageWidth;
     final effH = rotated ? imageWidth : imageHeight;
 
-    // ✅ Scale calculations
     final scaleX = size.width / effW;
     final scaleY = size.height / effH;
 
-    // ✅ Correct mapping: no mirror on X, flip Y vertically
     Offset mapPoint(double x, double y) {
-      final newX = size.width - (x * scaleX);
+      final newX = mirror ? size.width - (x * scaleX) : x * scaleX;
       final newY = y * scaleY;
       return Offset(newX, newY);
     }
 
     final lm = pose.landmarks;
 
+    // Define skeleton connections
     final connections = [
       [PoseLandmarkType.leftShoulder, PoseLandmarkType.rightShoulder],
       [PoseLandmarkType.leftHip, PoseLandmarkType.rightHip],
@@ -435,19 +734,17 @@ class _BicepCurlPainter extends CustomPainter {
       [PoseLandmarkType.rightShoulder, PoseLandmarkType.rightHip],
     ];
 
-    final linePaint =
-        Paint()
-          ..color = Colors.white
-          ..strokeWidth = 2
-          ..style = PaintingStyle.stroke
-          ..strokeCap = StrokeCap.round;
+    final linePaint = Paint()
+      ..color = postureGood ? Colors.greenAccent : Colors.orangeAccent
+      ..strokeWidth = 3
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round;
 
-    final jointPaint =
-        Paint()
-          ..color = postureGood ? Colors.greenAccent : Colors.redAccent
-          ..style = PaintingStyle.fill;
+    final jointPaint = Paint()
+      ..color = postureGood ? Colors.green : Colors.orange
+      ..style = PaintingStyle.fill;
 
-    // ✅ Draw skeleton lines
+    // Draw skeleton lines
     for (final pair in connections) {
       final a = lm[pair[0]];
       final b = lm[pair[1]];
@@ -455,27 +752,27 @@ class _BicepCurlPainter extends CustomPainter {
       canvas.drawLine(mapPoint(a.x, a.y), mapPoint(b.x, b.y), linePaint);
     }
 
-    // ✅ Draw joints
+    // Draw joints
     for (final l in lm.values) {
       canvas.drawCircle(mapPoint(l.x, l.y), 6, jointPaint);
     }
 
-    // ✅ Draw elbow angle text
+    // Draw elbow angle label
     final elbow = lm[PoseLandmarkType.rightElbow];
     if (elbowAngle != null && elbow != null) {
       final tp = TextPainter(
         text: TextSpan(
           text: '${elbowAngle!.toStringAsFixed(0)}°',
           style: const TextStyle(
-            color: Colors.yellowAccent,
+            color: Colors.white,
             fontSize: 14,
             fontWeight: FontWeight.bold,
-            shadows: [Shadow(color: Colors.black, blurRadius: 4)],
+            backgroundColor: Colors.black54,
           ),
         ),
         textDirection: TextDirection.ltr,
       )..layout();
-      tp.paint(canvas, mapPoint(elbow.x, elbow.y) + const Offset(8, -20));
+      tp.paint(canvas, mapPoint(elbow.x, elbow.y) + const Offset(10, -15));
     }
 
     canvas.restore();

@@ -89,6 +89,9 @@ flutter:
     - assets/models/scaler_params.json
     - assets/models/label_encoder.json
     - assets/models/shoulder_press_model.onnx
+    - assets/models/bicep_scaler.json
+    - assets/models/bicep_label_encoder.json
+    - assets/models/bicep_knn_data.json
     
   #   - images/a_dot_ham.jpeg
 

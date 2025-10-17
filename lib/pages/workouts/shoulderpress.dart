@@ -1,5 +1,4 @@
 import 'dart:math' as math;
-import 'dart:typed_data';
 import 'package:fitpose/models/shoulderpress-feature-extract.dart';
 import 'package:fitpose/models/shoulder_press_classifier.dart';
 import 'package:flutter/material.dart';
@@ -425,8 +424,8 @@ class _ShoulderPressPageState extends State<ShoulderPressPage> {
     // Debug: Show trunk angle status
     if (kDebugMode) {
       final status = _trunkAngle! < minTorsoAngleDeg 
-          ? 'ARCHING (<${minTorsoAngleDeg}°)' 
-          : (_trunkAngle! > maxTorsoAngleDeg ? 'LEANING (>${maxTorsoAngleDeg}°)' : 'UPRIGHT (${minTorsoAngleDeg}-${maxTorsoAngleDeg}°)');
+          ? 'ARCHING (<$minTorsoAngleDeg°)' 
+          : (_trunkAngle! > maxTorsoAngleDeg ? 'LEANING (>$maxTorsoAngleDeg°)' : 'UPRIGHT ($minTorsoAngleDeg-$maxTorsoAngleDeg°)');
       print('[Trunk] ${_trunkAngle!.toStringAsFixed(1)}° | Status: $status | Upright: $upright | Symmetric: $symmetric | Flaring: $_elbowsFlaringDetected');
     }
 

@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'dart:typed_data';
 import 'package:flutter/services.dart';
 import 'package:flutter/foundation.dart';
 import 'package:onnxruntime/onnxruntime.dart';
@@ -163,7 +162,9 @@ class ShoulderPressClassifier {
       }
 
       // Release outputs
-      outputs.forEach((value) => value?.release());
+      for (var value in outputs) {
+        value?.release();
+      }
 
       // Parse the predicted class index
       int predictedClassIdx = 0;

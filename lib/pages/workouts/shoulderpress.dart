@@ -57,11 +57,22 @@ class _ShoulderPressPageState extends State<ShoulderPressPage> {
   String _state = 'waiting'; // waiting | lowered | raised
   bool _anomaly = false;
 
+  // Rule-based elbows flaring detection
+  double? _leftElbowFlare;
+  double? _rightElbowFlare;
+  bool _elbowsFlaringDetected = false;
+  String _flaringDetails = '';
+
   static const double loweredThresh = 90; // down
   static const double raisedThresh = 100; // up
   static const double minTorsoAngleDeg = 88; // ADDED: Below this = arching back
   static const double maxTorsoAngleDeg = 100; // Above this = leaning forward
   static const double maxAsymmetryDeg = 25; // elbows diff (relaxed for better detection)
+  
+  // Rule-based elbows flaring thresholds
+  static const double maxElbowSpreadRatio = 1.8;  // Total elbow spread vs shoulder width
+  static const double maxElbowFlareRatio = 1.4;   // Individual elbow-shoulder distance ratio
+
 
   // Use portrait 270 like your working BicepCurl page
   InputImageRotation _rotation = InputImageRotation.rotation270deg;
@@ -321,6 +332,74 @@ class _ShoulderPressPageState extends State<ShoulderPressPage> {
     );
     _avgElbow = ((_leftElbow ?? 0) + (_rightElbow ?? 0)) / 2.0;
 
+    // ═══════════════════════════════════════════════════════════════
+    // RULE-BASED ELBOWS FLARING DETECTION
+    // ═══════════════════════════════════════════════════════════════
+    
+    // Calculate body centerline (vertical line between shoulders)
+    final shoulderMidX = (ls.x + rs.x) / 2;
+    final shoulderWidth = (ls.x - rs.x).abs();
+    
+    // Calculate horizontal distance of each elbow from centerline
+    _leftElbowFlare = (le.x - shoulderMidX).abs();
+    _rightElbowFlare = (re.x - shoulderMidX).abs();
+    
+    // Calculate total elbow spread (distance between elbows)
+    final elbowSpread = (le.x - re.x).abs();
+    
+    // *** CHECK 1: Elbow spread ratio (total width of elbows vs shoulders) ***
+    final elbowSpreadRatio = elbowSpread / (shoulderWidth + 1e-7);
+    final spreadTooWide = elbowSpreadRatio > maxElbowSpreadRatio;
+    
+    // *** CHECK 2: Individual elbow-to-shoulder distance ratio ***
+    final leftShoulderDist = math.sqrt(
+      math.pow(le.x - ls.x, 2) + math.pow(le.y - ls.y, 2)
+    );
+    final rightShoulderDist = math.sqrt(
+      math.pow(re.x - rs.x, 2) + math.pow(re.y - rs.y, 2)
+    );
+    
+    // Normalize by shoulder width
+    final leftFlareRatio = leftShoulderDist / (shoulderWidth + 1e-7);
+    final rightFlareRatio = rightShoulderDist / (shoulderWidth + 1e-7);
+    
+    final leftFlaringTooMuch = leftFlareRatio > maxElbowFlareRatio;
+    final rightFlaringTooMuch = rightFlareRatio > maxElbowFlareRatio;
+    
+    // *** CHECK 3: Asymmetric flaring (one elbow flares more than the other) ***
+    final flareDifference = (_leftElbowFlare! - _rightElbowFlare!).abs();
+    final asymmetricFlaring = flareDifference > (shoulderWidth * 0.3); // 30% of shoulder width
+    
+    // *** COMBINED RULE: Elbows are flaring if ANY condition is met ***
+    _elbowsFlaringDetected = spreadTooWide || 
+                              leftFlaringTooMuch || 
+                              rightFlaringTooMuch || 
+                              asymmetricFlaring;
+    
+    // Detailed feedback
+    if (_elbowsFlaringDetected) {
+      if (spreadTooWide) {
+        _flaringDetails = 'Elbows too wide (${elbowSpreadRatio.toStringAsFixed(2)}x shoulder width)';
+      } else if (leftFlaringTooMuch && rightFlaringTooMuch) {
+        _flaringDetails = 'Both elbows flaring out';
+      } else if (leftFlaringTooMuch) {
+        _flaringDetails = 'Left elbow flaring out';
+      } else if (rightFlaringTooMuch) {
+        _flaringDetails = 'Right elbow flaring out';
+      } else if (asymmetricFlaring) {
+        _flaringDetails = 'Asymmetric elbow position';
+      }
+    } else {
+      _flaringDetails = 'Elbows in good position';
+    }
+    
+    if (kDebugMode) {
+      print('[Flaring Check] Spread: ${elbowSpreadRatio.toStringAsFixed(2)}x | '
+            'L: ${leftFlareRatio.toStringAsFixed(2)}x | '
+            'R: ${rightFlareRatio.toStringAsFixed(2)}x | '
+            'Flaring: $_elbowsFlaringDetected | $_flaringDetails');
+    }
+
     // *** FIXED: Calculate trunk angle EXACTLY like Python and feature extractor ***
     final midSh = Offset((ls.x + rs.x) / 2, (ls.y + rs.y) / 2);
     final midHp = Offset((lh!.x + rh!.x) / 2, (lh.y + rh.y) / 2);
@@ -339,14 +418,16 @@ class _ShoulderPressPageState extends State<ShoulderPressPage> {
     final upright = _trunkAngle! >= minTorsoAngleDeg && _trunkAngle! <= maxTorsoAngleDeg;
     
     final symmetric = elbowsDiff < maxAsymmetryDeg;
-    final ruleBasedGood = upright && symmetric;
+    
+    // *** UPDATED: Include elbows flaring check in rule-based assessment ***
+    final ruleBasedGood = upright && symmetric && !_elbowsFlaringDetected;
 
     // Debug: Show trunk angle status
     if (kDebugMode) {
       final status = _trunkAngle! < minTorsoAngleDeg 
           ? 'ARCHING (<${minTorsoAngleDeg}°)' 
           : (_trunkAngle! > maxTorsoAngleDeg ? 'LEANING (>${maxTorsoAngleDeg}°)' : 'UPRIGHT (${minTorsoAngleDeg}-${maxTorsoAngleDeg}°)');
-      print('[Trunk] ${_trunkAngle!.toStringAsFixed(1)}° | Status: $status | Upright: $upright | Symmetric: $symmetric');
+      print('[Trunk] ${_trunkAngle!.toStringAsFixed(1)}° | Status: $status | Upright: $upright | Symmetric: $symmetric | Flaring: $_elbowsFlaringDetected');
     }
 
     // *** LABEL-SPECIFIC CONFIDENCE THRESHOLDS ***
@@ -392,6 +473,8 @@ class _ShoulderPressPageState extends State<ShoulderPressPage> {
           } else {
             ruleFeedback = 'Don\'t lean forward';   // > 100° (leaning)
           }
+        } else if (_elbowsFlaringDetected) {
+          ruleFeedback = _flaringDetails;           // Specific flaring feedback
         } else if (!symmetric) {
           ruleFeedback = 'Keep arms symmetric';
         } else {
@@ -415,6 +498,8 @@ class _ShoulderPressPageState extends State<ShoulderPressPage> {
         } else {
           ruleFeedback = 'Don\'t lean forward';     // > 100° (leaning)
         }
+      } else if (_elbowsFlaringDetected) {
+        ruleFeedback = _flaringDetails;             // Specific flaring feedback
       } else if (!symmetric) {
         ruleFeedback = 'Keep arms symmetric';
       } else {

@@ -67,12 +67,13 @@ class _BicepCurlState extends State<BicepCurl> {
   double _previousTime = 0.0;
 
   // ═══════════════════════════════════════════════════════════════
-  // THRESHOLDS (exactly matching Python)
+  // THRESHOLDS (MATCHING PYTHON EXACTLY - RULE-BASED ONLY)
+  // SWING_TH = 0.06, LEAN_TH = -165.0, DOWN_TH = 75.0, UP_TH = 149.0
   // ═══════════════════════════════════════════════════════════════
-  static const double swingThreshold = 0.06;    // SWING_TH
-  static const double leanThreshold = -165.0;   // LEAN_TH
-  static const double downThreshold = 75.0;     // DOWN_TH
-  static const double upThreshold = 149.0;      // UP_TH
+  static const double swingThreshold = 0.06;     // SWING_TH (elbow drift)
+  static const double leanThreshold = -165.0;    // LEAN_TH (torso lean)
+  static const double downThreshold = 75.0;      // DOWN_TH (bottom of curl)
+  static const double upThreshold = 149.0;       // UP_TH (top of curl)
 
   InputImageRotation _rotation = InputImageRotation.rotation270deg;
 
@@ -231,6 +232,8 @@ class _BicepCurlState extends State<BicepCurl> {
       _previousAngle ?? 0.0,
       _previousTime,
       currentTime,
+      _imageWidth!.toDouble(),   // Pass image width for normalization
+      _imageHeight!.toDouble(),  // Pass image height for normalization
     );
 
     // Update for next frame
@@ -270,9 +273,14 @@ class _BicepCurlState extends State<BicepCurl> {
     final angSmooth = _getBufferMean(_angBuffer);
     final dxSmooth = _getBufferMean(_dxBuffer);
     final inclSmooth = _getBufferMean(_inclBuffer);
+    // vel, wh, mc, rom not needed for rule-based only
+    // ignore: unused_local_variable
     final velSmooth = _getBufferMean(_velBuffer);
+    // ignore: unused_local_variable
     final whSmooth = _getBufferMean(_whBuffer);
+    // ignore: unused_local_variable
     final mcSmooth = _getBufferMean(_mcBuffer);
+    // ignore: unused_local_variable
     final romSmooth = _getBufferMean(_romBuffer);
 
     // Update display values
@@ -280,11 +288,13 @@ class _BicepCurlState extends State<BicepCurl> {
     _torsoAngle = inclSmooth;
     _dx = dxSmooth;
 
-    // Debug print (matching Python)
+    // Debug print (matching Python EXACTLY)
     if (kDebugMode) {
-      print('DEBUG → incl_s=${inclSmooth.toStringAsFixed(1)}, '
-            'dx_s=${dxSmooth.toStringAsFixed(3)}, '
-            'ang_s=${angSmooth.toStringAsFixed(1)}');
+      print('DEBUG → incl_s=${inclSmooth.toStringAsFixed(1)}, dx_s=${dxSmooth.toStringAsFixed(3)}');
+      print('  ang_s=${angSmooth.toStringAsFixed(1)}, state=$_fsmState, cycle_ok=$_cycleOk');
+      print('  RAW → dx=${features[1].toStringAsFixed(3)} (NORMALIZED), shoulder.x=${shoulderR.x.toStringAsFixed(1)}px, elbow.x=${elbowR.x.toStringAsFixed(1)}px');
+      print('  Image size: ${_imageWidth}x${_imageHeight}');
+      print('  Thresholds: SWING=$swingThreshold, LEAN=$leanThreshold, DOWN=$downThreshold, UP=$upThreshold');
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -292,19 +302,20 @@ class _BicepCurlState extends State<BicepCurl> {
     // if ang_s > UP_TH: instruction = "Raise weight fully"
     // elif ang_s < DOWN_TH: instruction = "Lower weight fully"
     // ═══════════════════════════════════════════════════════════════
-    
+
     if (angSmooth > upThreshold) {
-      _instruction = 'Lower weight fully';
-    } else if (angSmooth < downThreshold) {
       _instruction = 'Raise weight fully';
+    } else if (angSmooth < downThreshold) {
+      _instruction = 'Lower weight fully';
     } else {
       _instruction = 'neutral';
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // 6) THRESHOLD SHORTCUTS (highest priority) - matching Python step 6
+    // 6) THRESHOLD SHORTCUTS (RULE-BASED ONLY - matching Python step 6)
     // if dx_s > SWING_TH: form_label = "swing"
     // elif incl_s < LEAN_TH: form_label = "lean"
+    // else: ML fallback (DISABLED - using rule-based defaults)
     // ═══════════════════════════════════════════════════════════════
     
     String formLabel = 'neutral';
@@ -314,57 +325,25 @@ class _BicepCurlState extends State<BicepCurl> {
       _mlLabel = 'swing';
       _postureGood = false;
       _postureStatus = 'Stop swinging!';
+      if (kDebugMode) {
+        print('[RULE] SWING: dx_s=${dxSmooth.toStringAsFixed(3)} > $swingThreshold');
+      }
     } else if (inclSmooth < leanThreshold) {
       formLabel = 'lean';
       _mlLabel = 'lean';
       _postureGood = false;
       _postureStatus = 'Don\'t lean forward!';
+      if (kDebugMode) {
+        print('[RULE] LEAN: incl_s=${inclSmooth.toStringAsFixed(1)} < $leanThreshold');
+      }
     } else {
-      // ═══════════════════════════════════════════════════════════════
-      // 7) ML FALLBACK (matching Python step 7)
-      // feats = np.array([[ang_s, dx_s, incl_s, vel_s, wh_s, mc_s, rom_s]])
-      // feats_sc = scaler.transform(feats)
-      // idx = model.predict(feats_sc)[0]
-      // form_label = label_encoder.inverse_transform([idx])[0]
-      // ═══════════════════════════════════════════════════════════════
-      
-      if (_classifierReady && _mcBuffer.length >= bufferSize) {
-        final smoothedFeatures = [
-          angSmooth,
-          dxSmooth,
-          inclSmooth,
-          velSmooth,
-          whSmooth,
-          mcSmooth,
-          romSmooth,
-        ];
-
-        final prediction = _classifier.predict(smoothedFeatures);
-        _mlLabel = prediction['label'];
-        _mlConfidence = prediction['confidence'];
-        formLabel = _mlLabel;
-
-        if (kDebugMode) {
-          print('[ML] $_mlLabel @ ${(_mlConfidence * 100).toStringAsFixed(1)}%');
-        }
-
-        // Update posture status based on ML prediction
-        if (_mlLabel == 'good') {
-          _postureGood = true;
-          _postureStatus = 'Good Form ✓';
-        } else if (_mlLabel == 'half_rep') {
-          _postureGood = false;
-          _postureStatus = 'Complete full range!';
-        } else {
-          _postureGood = false;
-          _postureStatus = 'Fix form: $_mlLabel';
-        }
-      } else {
-        // Classifier not ready yet
-        formLabel = 'neutral';
-        _mlLabel = 'neutral';
-        _postureGood = true;
-        _postureStatus = 'Tracking...';
+      // Python uses ML fallback here, but we'll default to "good" for rule-based only
+      formLabel = 'good';
+      _mlLabel = 'good';
+      _postureGood = true;
+      _postureStatus = 'Good Form ✓';
+      if (kDebugMode) {
+        print('[RULE] GOOD: dx_s=${dxSmooth.toStringAsFixed(3)}, incl_s=${inclSmooth.toStringAsFixed(1)}');
       }
     }
 
@@ -503,7 +482,7 @@ class _BicepCurlState extends State<BicepCurl> {
                         torsoAngle: _torsoAngle,
                         postureGood: _postureGood,
                         rotation: _rotation,
-                        mirror: false,
+                        mirror: true,
                       ),
                     ),
                   ),

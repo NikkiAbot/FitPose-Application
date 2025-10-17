@@ -1,5 +1,4 @@
 import 'dart:math' as math;
-import 'dart:typed_data';
 import 'package:fitpose/models/shoulderpress-feature-extract.dart';
 import 'package:fitpose/models/shoulder_press_classifier.dart';
 import 'package:flutter/material.dart';

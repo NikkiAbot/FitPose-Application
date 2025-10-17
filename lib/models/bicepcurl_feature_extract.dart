@@ -9,6 +9,8 @@ class BicepCurlFeatureExtractor {
     double previousAngle,
     double previousTime,
     double currentTime,
+    double imageWidth,  // Added: for normalization
+    double imageHeight, // Added: for normalization
   ) {
     // Get required landmarks
     final rightShoulder = landmarks[PoseLandmarkType.rightShoulder];
@@ -32,8 +34,19 @@ class BicepCurlFeatureExtractor {
 
     // ═══════════════════════════════════════════════════════════════
     // FEATURE 2: Elbow drift (dx) - horizontal distance from shoulder
+    // Python: dx = abs(el[0] - sh[0]) in NORMALIZED coordinates (0.0-1.0)
+    // ML Kit returns pixel coordinates, so we MUST normalize by image width
     // ═══════════════════════════════════════════════════════════════
-    final dx = (rightElbow.x - rightShoulder.x).abs();
+    final leftShoulder = landmarks[PoseLandmarkType.leftShoulder];
+    final leftElbow = landmarks[PoseLandmarkType.leftElbow];
+    
+    // Calculate in pixels first
+    final dxPixels = (leftShoulder != null && leftElbow != null)
+        ? (leftElbow.x - leftShoulder.x).abs()
+        : (rightElbow.x - rightShoulder.x).abs();
+    
+    // NORMALIZE by image width to get 0.0-1.0 range (matching Python)
+    final dx = dxPixels / imageWidth;
 
     // ═══════════════════════════════════════════════════════════════
     // FEATURE 3: Torso inclination (incl)

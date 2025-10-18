@@ -69,8 +69,8 @@ class _ShoulderPressPageState extends State<ShoulderPressPage> {
   static const double maxAsymmetryDeg = 25; // elbows diff (relaxed for better detection)
   
   // Rule-based elbows flaring thresholds
-  static const double maxElbowSpreadRatio = 1.8;  // Total elbow spread vs shoulder width
-  static const double maxElbowFlareRatio = 1.4;   // Individual elbow-shoulder distance ratio
+  static const double maxElbowSpreadRatio = 2.2;  // Total elbow spread vs shoulder width
+  static const double maxElbowFlareRatio = 1.7;   // Individual elbow-shoulder distance ratio
 
 
   // Use portrait 270 like your working BicepCurl page

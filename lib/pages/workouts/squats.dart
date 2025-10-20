@@ -74,7 +74,7 @@ class _SquatsState extends State<Squats> {
       OrtEnv.instance.init();
       final bytes =
           (await rootBundle.load(
-            'assets/models/your_model.onnx',
+            'assets/onnx/squats_model.onnx',
           )).buffer.asUint8List();
       final options = OrtSessionOptions();
       _onnxSession = OrtSession.fromBuffer(bytes, options);

@@ -83,9 +83,15 @@ flutter:
   # To add assets to your application, add an assets section, like this:
   assets:
     - lib/images/
-    - assets/form_knn.onnx
-    - assets/form_labels.json
-    - assets/squats_model.onnx
+    - assets/onnx/form_knn.onnx
+    - assets/onnx/squats_model.onnx
+    - assets/onnx/shoulder_press_model.onnx
+    - assets/json/form_labels.json
+    - assets/json/scaler_params.json
+    - assets/json/label_encoder.json
+    - assets/json/bicep_scaler.json
+    - assets/json/bicep_label_encoder.json
+    - assets/json/bicep_knn_data.json
   #   - images/a_dot_ham.jpeg
 
   # An image asset can refer to one or more resolution-specific "variants", see

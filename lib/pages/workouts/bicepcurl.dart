@@ -1,9 +1,12 @@
+import 'dart:async';
 import 'dart:math' as math;
 import 'dart:collection'; // For Queue
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../../components/camera_widget.dart';
 import '../../models/bicepcurl_feature_extract.dart';
@@ -40,6 +43,11 @@ class _BicepCurlState extends State<BicepCurl> {
   bool _postureGood = false;
 
   int _curlReps = 0;
+
+  // NEW: set tracking
+  int _setsCount = 0; // total completed sets
+  int _repsInCurrentSet = 0; // reps counted inside the current set
+  static const int repsPerSet = 8;
 
   // ═══════════════════════════════════════════════════════════════
   // ML CLASSIFIER
@@ -84,9 +92,31 @@ class _BicepCurlState extends State<BicepCurl> {
   bool _cycleOk = false;
   String _instruction = 'neutral';
 
+  // Session timer fields
+  bool _sessionActive = false;
+  final Stopwatch _sessionStopwatch = Stopwatch();
+  Timer? _sessionTimer;
+  Duration _sessionElapsed = Duration.zero;
+
+  // Firebase user id (existing user document)
+  static const String _userId = 'sOhSvvCkO4QWQiVflGtNJkSGSzf1';
+
   @override
   void initState() {
     super.initState();
+    _initFirebaseAndStart();
+  }
+
+  Future<void> _initFirebaseAndStart() async {
+    // initialize Firebase if not already initialized
+    try {
+      if (Firebase.apps.isEmpty) {
+        await Firebase.initializeApp();
+      }
+    } catch (e) {
+      if (kDebugMode) print('Firebase init error: $e');
+    }
+    // continue with classifier init and show dialog
     _initializeClassifier();
     WidgetsBinding.instance.addPostFrameCallback(
       (_) => _showInstructionsDialog(),
@@ -109,6 +139,7 @@ class _BicepCurlState extends State<BicepCurl> {
   void dispose() {
     _poseDetector.close();
     _classifier.dispose();
+    _sessionTimer?.cancel(); // clean up timer
     super.dispose();
   }
 
@@ -394,8 +425,18 @@ class _BicepCurlState extends State<BicepCurl> {
       if (angSmooth > upThreshold) {
         if (_cycleOk) {
           _curlReps += 1;
+          _repsInCurrentSet += 1; // track reps inside current set
+          // when reps in set reach threshold, increment sets and reset
+          if (_repsInCurrentSet >= repsPerSet) {
+            _setsCount += 1;
+            _repsInCurrentSet = 0;
+          }
           _feedback = 'Rep ✓';
-          if (kDebugMode) print('[FSM] ✅ Rep counted! Total: $_curlReps');
+          if (kDebugMode) {
+            print(
+              '[FSM] ✅ Rep counted! Total: $_curlReps, Sets: $_setsCount, InSet: $_repsInCurrentSet',
+            );
+          }
         } else {
           _feedback = 'Fix form';
           if (kDebugMode) print('[FSM] ❌ Rep NOT counted (bad form)');
@@ -450,6 +491,78 @@ class _BicepCurlState extends State<BicepCurl> {
     final min = values.reduce(math.min);
     final max = values.reduce(math.max);
     return max - min;
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // SESSION CONTROL METHODS
+  // ═══════════════════════════════════════════════════════════════
+
+  void _startSession() {
+    if (_sessionActive) return;
+    setState(() {
+      _sessionActive = true;
+      _sessionStopwatch.reset();
+      _sessionStopwatch.start();
+      _sessionElapsed = _sessionStopwatch.elapsed;
+      _sessionTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (!mounted) return;
+        setState(() => _sessionElapsed = _sessionStopwatch.elapsed);
+      });
+    });
+  }
+
+  void _endSession() {
+    if (!_sessionActive) return;
+    setState(() {
+      _sessionStopwatch.stop();
+      _sessionTimer?.cancel();
+      _sessionActive = false;
+      _sessionElapsed = _sessionStopwatch.elapsed;
+      // TODO: Persist session duration / reps if needed.
+    });
+
+    // save metrics to Firestore (non-blocking)
+    _saveSessionMetrics();
+  }
+
+  // NEW: persist session metrics to Firestore under 'bicep_metrics'
+  Future<void> _saveSessionMetrics() async {
+    try {
+      final firestore = FirebaseFirestore.instance;
+      final doc = <String, dynamic>{
+        'userId': _userId,
+        'timestamp': FieldValue.serverTimestamp(),
+        'sessionDurationSeconds': _sessionElapsed.inSeconds,
+        'reps': _curlReps,
+        'sets': _setsCount,
+        'repsInCurrentSet': _repsInCurrentSet,
+        // store recent angle buffers (converted to lists)
+        'elbowAngles': _angBuffer.toList(),
+        'torsoInclinations': _inclBuffer.toList(),
+        'dxValues': _dxBuffer.toList(),
+      };
+      await firestore.collection('bicep_metrics').add(doc);
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Session saved')));
+      }
+    } catch (e) {
+      if (kDebugMode) print('Error saving session metrics: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Failed to save session')));
+      }
+    }
+  }
+
+  String _formattedDuration(Duration d) {
+    final hours = d.inHours;
+    final minutes = d.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final seconds = d.inSeconds.remainder(60).toString().padLeft(2, '0');
+    if (hours > 0) return '$hours:$minutes:$seconds';
+    return '$minutes:$seconds';
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -518,9 +631,9 @@ class _BicepCurlState extends State<BicepCurl> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            // State and reps (matching Python display)
+                            // UPDATED: show sets count in HUD
                             Text(
-                              'State: $_fsmState   Reps: $_curlReps',
+                              'State: $_fsmState   Reps: $_curlReps   Sets: $_setsCount',
                               style: const TextStyle(
                                 fontWeight: FontWeight.bold,
                                 fontSize: 15,
@@ -600,6 +713,29 @@ class _BicepCurlState extends State<BicepCurl> {
                               ),
                             ),
 
+                            // Session timer display
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Text(
+                                  'Session: ${_sessionActive ? "Running" : "Stopped"}',
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 14,
+                                  ),
+                                ),
+                                Text(
+                                  _formattedDuration(_sessionElapsed),
+                                  style: const TextStyle(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ],
+                            ),
+
+                            const SizedBox(height: 8),
+
                             // Instruction (matching Python)
                             if (_instruction != 'neutral') ...[
                               const SizedBox(height: 4),
@@ -615,6 +751,111 @@ class _BicepCurlState extends State<BicepCurl> {
                           ],
                         ),
                       ),
+                    ),
+                  ),
+
+                  // New: compact translucent session control bar at the bottom
+                  Positioned(
+                    left: 16,
+                    right: 16,
+                    bottom: 22,
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        // Start button
+                        InkWell(
+                          onTap: _sessionActive ? null : _startSession,
+                          borderRadius: BorderRadius.circular(8),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 8,
+                            ),
+                            decoration: BoxDecoration(
+                              color:
+                                  _sessionActive
+                                      ? Colors.green.withValues(
+                                        alpha: 0.08,
+                                      ) // muted when active (disabled)
+                                      : Colors.green.withValues(
+                                        alpha: 0.18,
+                                      ), // subtle green when enabled
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Row(
+                              children: [
+                                Icon(
+                                  Icons.play_arrow,
+                                  color:
+                                      _sessionActive
+                                          ? Colors.white70
+                                          : Colors.white,
+                                  size: 18,
+                                ),
+                                const SizedBox(width: 6),
+                                Text(
+                                  'Start',
+                                  style: TextStyle(
+                                    color:
+                                        _sessionActive
+                                            ? Colors.white70
+                                            : Colors.white,
+                                    fontWeight: FontWeight.w600,
+                                    fontSize: 14,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        // End button
+                        InkWell(
+                          onTap: _sessionActive ? _endSession : null,
+                          borderRadius: BorderRadius.circular(8),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 8,
+                            ),
+                            decoration: BoxDecoration(
+                              color:
+                                  _sessionActive
+                                      ? Colors.red.withValues(
+                                        alpha: 0.18,
+                                      ) // visible red when active
+                                      : Colors.red.withValues(
+                                        alpha: 0.06,
+                                      ), // very subtle when disabled
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Row(
+                              children: [
+                                Icon(
+                                  Icons.stop,
+                                  color:
+                                      _sessionActive
+                                          ? Colors.white
+                                          : Colors.white70,
+                                  size: 18,
+                                ),
+                                const SizedBox(width: 6),
+                                Text(
+                                  'End',
+                                  style: TextStyle(
+                                    color:
+                                        _sessionActive
+                                            ? Colors.white
+                                            : Colors.white70,
+                                    fontWeight: FontWeight.w600,
+                                    fontSize: 14,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ],

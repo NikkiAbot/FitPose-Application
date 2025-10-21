@@ -1,8 +1,7 @@
-import '/progress/progress_tracker.dart';
 import 'package:flutter/material.dart';
 import '/components/appbar.dart';
 import '/components/navbar.dart';
-import '/analytics/analytics.dart';
+import '../../workouts_analytics/combined_analytics_progress.dart';
 
 class WorkoutPage extends StatelessWidget {
   const WorkoutPage({super.key});
@@ -17,11 +16,10 @@ class WorkoutPage extends StatelessWidget {
           padding: const EdgeInsets.only(bottom: 16),
           physics: const BouncingScrollPhysics(),
           child: Column(
-            children: const [
-              SizedBox(height: 8),
-              Analytics(),
-              SizedBox(height: 8),
-              ProgressTracker(workoutData: {}),
+            children: [
+              const SizedBox(height: 8),
+              CombinedAnalyticsProgress(workoutData: {}),
+              const SizedBox(height: 8),
             ],
           ),
         ),

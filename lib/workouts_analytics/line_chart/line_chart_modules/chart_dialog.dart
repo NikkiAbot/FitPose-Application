@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
-import '/analytics/presentation/app_resources.dart';
+import '../presentation/app_resources.dart';
 
 class WorkoutDialog {
   static void showWorkoutDetailsDialog(

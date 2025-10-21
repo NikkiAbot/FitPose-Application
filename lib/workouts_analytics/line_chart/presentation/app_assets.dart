@@ -1,4 +1,4 @@
-import '/analytics/util/app_helper.dart';
+import '../util/app_helper.dart';
 
 class AppAssets {
   static String getChartIcon(ChartType type) {

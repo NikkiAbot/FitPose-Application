@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
+import 'package:onnxruntime/onnxruntime.dart';
 import '../../../components/camera_widget.dart';
 
 class Plank extends StatefulWidget {
@@ -34,6 +35,7 @@ class _PlankState extends State<Plank> {
   bool _holding = false;
 
   InputImageRotation _rotation = InputImageRotation.rotation0deg;
+  OrtSession? _onnxSession;
 
   @override
   void initState() {
@@ -46,14 +48,31 @@ class _PlankState extends State<Plank> {
     WidgetsBinding.instance.addPostFrameCallback(
       (_) => _showInstructionsDialog(),
     );
+    _loadOnnxModel();
   }
 
   @override
   void dispose() {
     _poseDetector.close();
+    _onnxSession?.release();
     _timer?.cancel();
     SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
     super.dispose();
+  }
+
+  Future<void> _loadOnnxModel() async {
+    try {
+      OrtEnv.instance.init();
+      final bytes =
+          (await rootBundle.load(
+            'assets/onnx/plank_model.onnx',
+          )).buffer.asUint8List();
+      final options = OrtSessionOptions();
+      _onnxSession = OrtSession.fromBuffer(bytes, options);
+      if (kDebugMode) print('[ONNX] Model loaded.');
+    } catch (e) {
+      if (kDebugMode) print('[ONNX] Model load failed: $e');
+    }
   }
 
   void _onCameraImage(
@@ -114,6 +133,9 @@ class _PlankState extends State<Plank> {
 
       _latestPose = poses.first;
       _analyzePose(_latestPose!);
+
+      // ONNX inference after pose analysis
+      await _analyzeWithOnnx(_latestPose!);
     } catch (e) {
       if (kDebugMode) print('[Plank] Exception: $e');
       _latestPose = null;
@@ -281,6 +303,93 @@ class _PlankState extends State<Plank> {
     }
   }
 
+  Future<void> _analyzeWithOnnx(Pose pose) async {
+    if (_onnxSession == null) return;
+    try {
+      final landmarks = pose.landmarks;
+      final inputData = <double>[];
+
+      // 17 keypoints (x, y normalized)
+      final keypoints = [
+        PoseLandmarkType.nose,
+        PoseLandmarkType.leftEye,
+        PoseLandmarkType.rightEye,
+        PoseLandmarkType.leftShoulder,
+        PoseLandmarkType.rightShoulder,
+        PoseLandmarkType.leftElbow,
+        PoseLandmarkType.rightElbow,
+        PoseLandmarkType.leftWrist,
+        PoseLandmarkType.rightWrist,
+        PoseLandmarkType.leftHip,
+        PoseLandmarkType.rightHip,
+        PoseLandmarkType.leftKnee,
+        PoseLandmarkType.rightKnee,
+        PoseLandmarkType.leftAnkle,
+        PoseLandmarkType.rightAnkle,
+        PoseLandmarkType.leftEar,
+        PoseLandmarkType.rightEar,
+      ];
+      for (final type in keypoints) {
+        final lm = landmarks[type];
+        inputData.add((lm?.x ?? 0) / (_imageWidth ?? 1));
+        inputData.add((lm?.y ?? 0) / (_imageHeight ?? 1));
+      }
+
+      final inputTensor = OrtValueTensor.createTensorWithDataList(
+        Float32List.fromList(inputData),
+        [1, inputData.length],
+      );
+      final inputs = {_onnxSession!.inputNames.first: inputTensor};
+      final outputs = _onnxSession!.run(OrtRunOptions(), inputs);
+
+      inputTensor.release();
+
+      if (outputs.isNotEmpty) {
+        final output = outputs.first;
+        if (output is OrtValueTensor) {
+          final List<double> outputValue = List<double>.from(output.value);
+          if (outputValue.isNotEmpty) {
+            final maxVal = outputValue.reduce(math.max);
+            final resultClass = outputValue.indexOf(maxVal);
+            switch (resultClass) {
+              case 0:
+                _feedback = 'Hips too low (AI detected)';
+                _goodForm = false;
+                _stopTimer();
+                break;
+              case 1:
+                _feedback = 'Hips too high (AI detected)';
+                _goodForm = false;
+                _stopTimer();
+                break;
+              case 2:
+                _feedback = 'Good plank (AI verified)';
+                _goodForm = true;
+                _startTimer();
+                break;
+              default:
+                _feedback = 'Unknown AI output';
+                _goodForm = false;
+                _stopTimer();
+            }
+          } else {
+            _feedback = 'Model output empty';
+          }
+        } else {
+          _feedback = 'Invalid model output';
+        }
+      } else {
+        _feedback = 'No model output';
+      }
+
+      for (final o in outputs) {
+        o?.release();
+      }
+    } catch (e) {
+      if (kDebugMode) print('[ONNX] Inference failed: $e');
+    }
+  }
+
   void _startTimer() {
     if (_holding) return;
     _holding = true;
@@ -342,6 +451,15 @@ class _PlankState extends State<Plank> {
 
     return Scaffold(
       backgroundColor: Colors.black,
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back, color: Colors.grey, size: 28),
+          onPressed: () => Navigator.of(context).pop(),
+          tooltip: 'Back',
+        ),
+      ),
       body:
           _showCamera
               ? Stack(

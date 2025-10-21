@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
-import '../model/progressmodel.dart';
+import '../tracker_model/progressmodel.dart';
 import '../util/time_util.dart';
 
 class ProgressBox extends StatelessWidget {

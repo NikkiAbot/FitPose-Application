@@ -1,21 +1,20 @@
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
-import '/analytics/presentation/app_resources.dart';
-import '/analytics/modules/chart_dialog.dart';
-import '/analytics/modules/chart_titles.dart';
-import '/analytics/modules/workout_utils.dart';
+import '../presentation/app_resources.dart';
+import 'chart_titles.dart';
 
 class ChartData {
   // Inside the ChartData class
   static LineChartData sampleData1(
     BuildContext context,
     List<int> activeIndices,
+    List<LineChartBarData> allBars, // <- now provided by caller
   ) => LineChartData(
     lineTouchData: _lineTouchData1(context, activeIndices),
     gridData: _gridData,
     titlesData: ChartTitles.titlesData1,
     borderData: _borderData,
-    lineBarsData: _getFilteredLineBarsData(_lineBarsData1, activeIndices),
+    lineBarsData: _getFilteredLineBarsData(allBars, activeIndices),
     minX: 0,
     maxX: 14,
     maxY: 100,
@@ -25,12 +24,13 @@ class ChartData {
   static LineChartData sampleData2(
     BuildContext context,
     List<int> activeIndices,
+    List<LineChartBarData> allBars, // <- now provided by caller
   ) => LineChartData(
     lineTouchData: _lineTouchData2,
     gridData: _gridData,
     titlesData: ChartTitles.titlesData2,
     borderData: _borderData,
-    lineBarsData: _getFilteredLineBarsData(_lineBarsData2, activeIndices),
+    lineBarsData: _getFilteredLineBarsData(allBars, activeIndices),
     minX: 0,
     maxX: 14,
     maxY: 100,
@@ -69,7 +69,6 @@ class ChartData {
                 ? activeIndices[filteredIndex]
                 : -1;
 
-        // Now use actualWorkoutIndex to determine workout type
         String workoutType = "";
         switch (actualWorkoutIndex) {
           case 0:
@@ -95,14 +94,21 @@ class ChartData {
         }
 
         final accuracy = spot.y.toInt();
-        final date = WorkoutUtils.getDateForXValue(spot.x);
 
-        // Display the details dialog for the selected workout
-        WorkoutDialog.showWorkoutDetailsDialog(
-          context,
-          workoutType,
-          accuracy,
-          date,
+        // Simple dialog showing workout and accuracy (removed calendar mapping)
+        showDialog(
+          context: context,
+          builder:
+              (ctx) => AlertDialog(
+                title: Text(workoutType),
+                content: Text('Accuracy: $accuracy'),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.of(ctx).pop(),
+                    child: const Text('OK'),
+                  ),
+                ],
+              ),
         );
       }
     },
@@ -115,88 +121,6 @@ class ChartData {
 
   static LineTouchData get _lineTouchData2 =>
       const LineTouchData(enabled: false);
-
-  static LineChartBarData _lineChartBarData(
-    String title,
-    Color color,
-    List<FlSpot> spots,
-  ) {
-    return LineChartBarData(
-      isCurved: true,
-      color: color,
-      barWidth: 3,
-      isStrokeCapRound: true,
-      dotData: FlDotData(
-        show: true,
-        getDotPainter:
-            (spot, percent, barData, index) => FlDotCirclePainter(
-              radius: 4,
-              color: color,
-              strokeWidth: 2,
-              strokeColor: Colors.white,
-            ),
-      ),
-      belowBarData: BarAreaData(show: false),
-      spots: spots,
-    );
-  }
-
-  static List<LineChartBarData> get _lineBarsData1 => [
-    // Squat
-    _lineChartBarData('Squat', AppColors.contentColorGreen, const [
-      FlSpot(2, 25),
-      FlSpot(4, 20),
-      FlSpot(6, 37),
-      FlSpot(8, 28),
-      FlSpot(10, 45),
-      FlSpot(12, 60),
-      FlSpot(14, 70),
-    ]),
-    // Plank
-    _lineChartBarData('Plank', AppColors.contentColorPink, const [
-      FlSpot(1, 32),
-      FlSpot(3, 46),
-      FlSpot(5, 78),
-      FlSpot(7, 55),
-      FlSpot(9, 69),
-      FlSpot(11, 83),
-      FlSpot(13, 95),
-    ]),
-    // Push Up
-    _lineChartBarData('Push Up', AppColors.contentColorCyan, const [
-      FlSpot(2, 68),
-      FlSpot(5, 54),
-      FlSpot(8, 89),
-      FlSpot(11, 80),
-      FlSpot(14, 87),
-    ]),
-    // Shoulder Press
-    _lineChartBarData('Shoulder Press', Colors.orange, const [
-      FlSpot(1, 43),
-      FlSpot(4, 54),
-      FlSpot(7, 40),
-      FlSpot(10, 67),
-      FlSpot(13, 89),
-    ]),
-    // Bicep Curl
-    _lineChartBarData('Bicep Curl', Colors.purple, const [
-      FlSpot(2, 23),
-      FlSpot(5, 46),
-      FlSpot(8, 31),
-      FlSpot(11, 55),
-      FlSpot(14, 63),
-    ]),
-    // Lunges
-    _lineChartBarData('Lunges', Colors.amber, const [
-      FlSpot(3, 27),
-      FlSpot(6, 43),
-      FlSpot(9, 76),
-      FlSpot(12, 61),
-      FlSpot(14, 89),
-    ]),
-  ];
-
-  static List<LineChartBarData> get _lineBarsData2 => _lineBarsData1;
 
   static FlGridData get _gridData => FlGridData(
     show: true,

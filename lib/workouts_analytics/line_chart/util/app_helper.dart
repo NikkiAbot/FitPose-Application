@@ -1,5 +1,5 @@
-import '/analytics/presentation/app_resources.dart';
-import '/analytics/util/urls.dart';
+import 'urls.dart';
+import '../presentation/app_assets.dart';
 
 enum ChartType { line, bar, pie, scatter, radar, candlestick }
 

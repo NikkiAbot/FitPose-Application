@@ -1,0 +1,12 @@
+{
+  "classes": [
+    "D",
+    "I",
+    "M"
+  ],
+  "class_mapping": {
+    "D": "down",
+    "I": "init",
+    "M": "mid"
+  }
+}

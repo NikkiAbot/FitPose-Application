@@ -7,47 +7,52 @@ class LungesErrorClassifier {
   List<double>? _scalerMean;
   List<double>? _scalerScale;
   
-  List<List<double>>? _trainingData;
-  List<String>? _trainingLabels; // ['C' (correct), 'K' (knee-over-toe)]
-  int _k = 5;
+  // Logistic Regression parameters
+  List<double>? _coefficients;
+  double? _intercept;
+  List<int>? _classes; // [0, 1] where 0=correct, 1=knee-over-toe
 
   bool get isReady =>
       _scalerMean != null &&
       _scalerScale != null &&
-      _trainingData != null &&
-      _trainingLabels != null;
+      _coefficients != null &&
+      _intercept != null &&
+      _classes != null;
 
   Future<void> initialize() async {
+    debugPrint('🟢 [ErrorClassifier] initialize() CALLED');
     try {
+      debugPrint('🟢 [ErrorClassifier] Loading scaler...');
       // Load scaler (same as stage classifier)
-      final scalerJson = await rootBundle.loadString('assets/models/lunges_scaler.json');
+      final scalerJson = await rootBundle.loadString('assets/json/lunges_scaler.json');
       final scalerData = json.decode(scalerJson);
       _scalerMean = List<double>.from(scalerData['mean']);
       _scalerScale = List<double>.from(scalerData['scale']);
 
-      // Load error KNN data
-      final knnJson = await rootBundle.loadString('assets/models/lunges_error_knn.json');
-      final knnData = json.decode(knnJson);
-      _k = knnData['n_neighbors'] ?? 5;
+      debugPrint('🟢 [ErrorClassifier] Loading Logistic Regression model...');
+      // Load Logistic Regression model data
+      final modelJson = await rootBundle.loadString('assets/json/lunges_error_knn.json');
+      final modelData = json.decode(modelJson);
 
-      _trainingData = (knnData['training_data'] as List)
-          .map((e) => List<double>.from(e))
-          .toList();
-      _trainingLabels = List<String>.from(knnData['training_labels']);
+      _coefficients = List<double>.from(modelData['coefficients'][0]);
+      _intercept = (modelData['intercept'] as List)[0].toDouble();
+      _classes = List<int>.from(modelData['classes']);
 
       if (kDebugMode) {
-        print('✅ Lunges Error Classifier initialized');
-        print('   - Classes: [C (correct), K (knee-over-toe)]');
+        print('✅ Lunges Error Classifier initialized (Logistic Regression)');
+        print('   - Classes: [0 (correct), 1 (knee-over-toe)]');
+        print('   - Features: ${_coefficients!.length}');
       }
-    } catch (e) {
+    } catch (e, stackTrace) {
       if (kDebugMode) {
         print('❌ Error initializing Lunges Error Classifier: $e');
+        print('Stack trace: $stackTrace');
       }
       rethrow;
     }
   }
 
-  /// Predict error (C/K) with probability
+  /// Predict error using Logistic Regression
   Map<String, dynamic> predict(List<double> features) {
     if (!isReady) {
       return {'class': 'C', 'probability': 0.0};
@@ -59,33 +64,22 @@ class LungesErrorClassifier {
       standardized.add((features[i] - _scalerMean![i]) / _scalerScale![i]);
     }
 
-    // KNN prediction (same logic as stage classifier)
-    final distances = <_DistanceLabel>[];
-    for (int i = 0; i < _trainingData!.length; i++) {
-      double dist = 0.0;
-      for (int j = 0; j < standardized.length; j++) {
-        final diff = standardized[j] - _trainingData![i][j];
-        dist += diff * diff;
-      }
-      distances.add(_DistanceLabel(math.sqrt(dist), _trainingLabels![i]));
+    // Compute logit: z = intercept + sum(coefficients * features)
+    double logit = _intercept!;
+    for (int i = 0; i < standardized.length; i++) {
+      logit += _coefficients![i] * standardized[i];
     }
 
-    distances.sort((a, b) => a.distance.compareTo(b.distance));
-    final kNearest = distances.take(_k).toList();
+    // Apply sigmoid: probability = 1 / (1 + e^(-z))
+    final probability = 1.0 / (1.0 + math.exp(-logit));
 
-    final votes = <String, double>{};
-    for (final neighbor in kNearest) {
-      final weight = 1.0 / (neighbor.distance + 1e-10);
-      votes[neighbor.label] = (votes[neighbor.label] ?? 0.0) + weight;
-    }
-
-    String predictedClass = votes.entries.reduce((a, b) => a.value > b.value ? a : b).key;
-    final totalWeight = votes.values.reduce((a, b) => a + b);
-    final maxProb = votes[predictedClass]! / totalWeight;
+    // Predict class: if probability > 0.5, class is 1 (knee-over-toe), else 0 (correct)
+    final predictedClass = probability > 0.5 ? 1 : 0;
+    final className = predictedClass == 1 ? 'K' : 'C';
 
     return {
-      'class': predictedClass,
-      'probability': maxProb,
+      'class': className,
+      'probability': probability,
     };
   }
 
@@ -94,10 +88,4 @@ class LungesErrorClassifier {
       print('🗑️ Lunges Error Classifier disposed');
     }
   }
-}
-
-class _DistanceLabel {
-  final double distance;
-  final String label;
-  _DistanceLabel(this.distance, this.label);
 }

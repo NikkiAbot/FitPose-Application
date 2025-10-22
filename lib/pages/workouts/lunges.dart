@@ -1,3 +1,4 @@
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
@@ -12,10 +13,17 @@ class Lunges extends StatefulWidget {
   const Lunges({super.key});
 
   @override
-  State<Lunges> createState() => _LungesState();
+  State<Lunges> createState() {
+    debugPrint('🌟🌟🌟 Lunges.createState() CALLED - CREATING NEW STATE 🌟🌟🌟');
+    return _LungesState();
+  }
 }
 
 class _LungesState extends State<Lunges> {
+  _LungesState() {
+    debugPrint('🔥🔥🔥 LUNGES STATE CONSTRUCTOR CALLED 🔥🔥🔥');
+  }
+
   final _showCamera = true;
   
   late final PoseDetector _poseDetector = PoseDetector(
@@ -38,6 +46,8 @@ class _LungesState extends State<Lunges> {
   final LungesStageClassifier _stageClassifier = LungesStageClassifier();
   final LungesErrorClassifier _errorClassifier = LungesErrorClassifier();
   bool _classifiersReady = false;
+  bool _initializationAttempted = false;
+  String _initializationStatus = 'Not started';
 
   // ═══════════════════════════════════════════════════════════════
   // STATE TRACKING (matching Python logic)
@@ -65,6 +75,9 @@ class _LungesState extends State<Lunges> {
   @override
   void initState() {
     super.initState();
+    debugPrint('═══════════════════════════════════════════');
+    debugPrint('[Lunges] 🚀 INIT STATE CALLED');
+    debugPrint('═══════════════════════════════════════════');
     _initializeClassifiers();
     WidgetsBinding.instance.addPostFrameCallback(
       (_) => _showInstructionsDialog(),
@@ -72,17 +85,45 @@ class _LungesState extends State<Lunges> {
   }
 
   Future<void> _initializeClassifiers() async {
-    await Future.wait([
-      _stageClassifier.initialize(),
-      _errorClassifier.initialize(),
-    ]);
-    if (mounted) {
-      setState(() {
-        _classifiersReady = _stageClassifier.isReady && _errorClassifier.isReady;
-      });
-    }
-    if (kDebugMode) {
-      print('[Lunges] Classifiers ready: $_classifiersReady');
+    debugPrint('[Lunges] 📦 _initializeClassifiers() ENTERED');
+    
+    setState(() {
+      _initializationAttempted = true;
+      _initializationStatus = 'Loading...';
+    });
+    
+    try {
+      debugPrint('[Lunges] Starting classifier initialization...');
+      
+      await Future.wait([
+        _stageClassifier.initialize(),
+        _errorClassifier.initialize(),
+      ]);
+      
+      if (mounted) {
+        setState(() {
+          _classifiersReady = _stageClassifier.isReady && _errorClassifier.isReady;
+          _initializationStatus = _classifiersReady ? 'Ready' : 'Failed';
+        });
+      }
+      
+      if (kDebugMode) {
+        print('[Lunges] ✅ Classifiers ready: $_classifiersReady');
+        print('[Lunges] Stage classifier ready: ${_stageClassifier.isReady}');
+        print('[Lunges] Error classifier ready: ${_errorClassifier.isReady}');
+      }
+    } catch (e, stackTrace) {
+      if (kDebugMode) {
+        print('[Lunges] ❌ Classifier initialization FAILED: $e');
+        print('[Lunges] Stack trace: $stackTrace');
+      }
+      
+      if (mounted) {
+        setState(() {
+          _classifiersReady = false;
+          _initializationStatus = 'Error: $e';
+        });
+      }
     }
   }
 
@@ -184,6 +225,9 @@ class _LungesState extends State<Lunges> {
     final lm = pose.landmarks;
 
     if (!_classifiersReady) {
+      if (kDebugMode) {
+        print('[Lunges] ⚠️ Skipping analysis - classifiers not ready');
+      }
       return;
     }
 
@@ -238,6 +282,8 @@ class _LungesState extends State<Lunges> {
         print('[Lunges] Stage: $_currentStage ($_stagePredictedClass @ ${(_stageProbability! * 100).toStringAsFixed(0)}%) | '
               'Counter: $_counter | '
               'Error: $_errorClass @ ${_errorProbability != null ? (_errorProbability! * 100).toStringAsFixed(0) : "N/A"}%');
+        print('[Lunges] Features extracted: ${features.length} values');
+        print('[Lunges] Probability value: $_stageProbability (formatted: ${_stageProbability!.toStringAsFixed(2)})');
       }
 
     } catch (e) {
@@ -251,6 +297,7 @@ class _LungesState extends State<Lunges> {
 
   @override
   Widget build(BuildContext context) {
+    debugPrint('🏗️ [Lunges] build() method called');
     return Scaffold(
       appBar: AppBar(
         title: const Text('Lunges'),
@@ -395,6 +442,25 @@ class _LungesState extends State<Lunges> {
                           ),
                         ],
                       ),
+                    ),
+                  ),
+                ),
+
+                // Initialization status indicator
+                Positioned(
+                  top: 90,
+                  left: 16,
+                  right: 16,
+                  child: Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: _classifiersReady ? Colors.green.withOpacity(0.8) : Colors.red.withOpacity(0.8),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Text(
+                      'Init: ${_initializationAttempted ? "YES" : "NO"} | Status: $_initializationStatus',
+                      style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
+                      textAlign: TextAlign.center,
                     ),
                   ),
                 ),

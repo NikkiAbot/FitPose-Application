@@ -9,7 +9,7 @@ class LungesStageClassifier {
   List<String>? _stageClasses; // ['I', 'M', 'D']
   
   List<List<double>>? _trainingData;
-  List<String>? _trainingLabels;
+  List<int>? _trainingLabels; // Changed from String to int (0, 1, 2)
   int _k = 5;
 
   bool get isReady =>
@@ -20,29 +20,31 @@ class LungesStageClassifier {
       _trainingLabels != null;
 
   Future<void> initialize() async {
+    debugPrint('🔵 [StageClassifier] initialize() CALLED');
     final startTime = DateTime.now();
 
     try {
+      debugPrint('🔵 [StageClassifier] Loading scaler...');
       // Load scaler
-      final scalerJson = await rootBundle.loadString('assets/models/lunges_scaler.json');
+      final scalerJson = await rootBundle.loadString('assets/json/lunges_scaler.json');
       final scalerData = json.decode(scalerJson);
       _scalerMean = List<double>.from(scalerData['mean']);
       _scalerScale = List<double>.from(scalerData['scale']);
 
       // Load stage classes
-      final classesJson = await rootBundle.loadString('assets/models/lunges_stage_classes.json');
+      final classesJson = await rootBundle.loadString('assets/json/lunges_stage_classes.json');
       final classesData = json.decode(classesJson);
       _stageClasses = List<String>.from(classesData['classes']);
 
       // Load KNN training data
-      final knnJson = await rootBundle.loadString('assets/models/lunges_stage_knn.json');
+      final knnJson = await rootBundle.loadString('assets/json/lunges_stage_knn.json');
       final knnData = json.decode(knnJson);
       _k = knnData['n_neighbors'] ?? 5;
 
       _trainingData = (knnData['training_data'] as List)
           .map((e) => List<double>.from(e))
           .toList();
-      _trainingLabels = List<String>.from(knnData['training_labels']);
+      _trainingLabels = List<int>.from(knnData['training_labels']); // Changed to int
 
       final elapsed = DateTime.now().difference(startTime).inMilliseconds;
       if (kDebugMode) {
@@ -87,21 +89,24 @@ class LungesStageClassifier {
     distances.sort((a, b) => a.distance.compareTo(b.distance));
     final kNearest = distances.take(_k).toList();
 
-    // Count votes with distance weighting
-    final votes = <String, double>{};
+    // Count votes with distance weighting (using integer labels)
+    final votes = <int, double>{};
     for (final neighbor in kNearest) {
       final weight = 1.0 / (neighbor.distance + 1e-10);
       votes[neighbor.label] = (votes[neighbor.label] ?? 0.0) + weight;
     }
 
-    // Get prediction
-    String predictedClass = votes.entries.reduce((a, b) => a.value > b.value ? a : b).key;
+    // Get prediction (integer label)
+    int predictedLabelInt = votes.entries.reduce((a, b) => a.value > b.value ? a : b).key;
     
-    // Calculate probabilities
+    // Convert integer label to string class (0→D, 1→I, 2→M)
+    String predictedClass = _stageClasses![predictedLabelInt];
+    
+    // Calculate probabilities for each class
     final totalWeight = votes.values.reduce((a, b) => a + b);
     final probabilities = <double>[];
-    for (final className in _stageClasses!) {
-      probabilities.add((votes[className] ?? 0.0) / totalWeight);
+    for (int i = 0; i < _stageClasses!.length; i++) {
+      probabilities.add((votes[i] ?? 0.0) / totalWeight);
     }
 
     final maxProb = probabilities.reduce(math.max);
@@ -122,6 +127,6 @@ class LungesStageClassifier {
 
 class _DistanceLabel {
   final double distance;
-  final String label;
+  final int label; // Changed from String to int
   _DistanceLabel(this.distance, this.label);
 }

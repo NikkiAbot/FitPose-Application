@@ -86,12 +86,17 @@ flutter:
     - assets/onnx/form_knn.onnx
     - assets/onnx/squats_model.onnx
     - assets/onnx/shoulder_press_model.onnx
+    - assets/onnx/push_up_model.onnx
     - assets/json/form_labels.json
     - assets/json/scaler_params.json
     - assets/json/label_encoder.json
     - assets/json/bicep_scaler.json
     - assets/json/bicep_label_encoder.json
     - assets/json/bicep_knn_data.json
+    - assets/json/lunges_scaler.json
+    - assets/json/lunges_stage_classes.json
+    - assets/json/lunges_stage_knn.json
+    - assets/json/lunges_error_knn.json
   #   - images/a_dot_ham.jpeg
 
   # An image asset can refer to one or more resolution-specific "variants", see

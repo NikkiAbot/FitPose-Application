@@ -204,7 +204,11 @@ class _HomePageState extends State<HomePage> {
                 onTap:
                     () => Navigator.push(
                       context,
-                      MaterialPageRoute(builder: (context) => const Lunges()),
+                      MaterialPageRoute(
+                        builder:
+                            (context) =>
+                                const Lunges(key: ValueKey('lunges_v2')),
+                      ),
                     ),
               ),
             ],

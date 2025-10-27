@@ -1,3 +1,4 @@
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
@@ -307,6 +308,10 @@ class _LungesState extends State<Lunges> {
   @override
   Widget build(BuildContext context) {
     debugPrint('🏗️ [Lunges] build() method called');
+    
+    // Determine HUD color based on form quality
+    final hudColor = _errorClass == 'K' ? Colors.redAccent : Colors.green;
+    
     return Scaffold(
       appBar: AppBar(
         title: const Text('Lunges'),
@@ -343,11 +348,12 @@ class _LungesState extends State<Lunges> {
                           currentStage: _currentStage,
                           rotation: _rotation,
                           mirror: true,
+                          errorClass: _errorClass,
                         ),
                       ),
                     ),
 
-                  // HUD overlay (matching Python's status box)
+                  // HUD with metrics (matching bicep curl style)
                   Positioned(
                     top: 16,
                     left: 16,
@@ -355,109 +361,208 @@ class _LungesState extends State<Lunges> {
                     child: Container(
                       padding: const EdgeInsets.all(12),
                       decoration: BoxDecoration(
-                        color: const Color(
-                          0xFFF57510,
-                        ).withValues(alpha: 0.9), // (245, 117, 16)
-                        border: Border.all(color: Colors.white70, width: 2),
-                        borderRadius: BorderRadius.circular(8),
+                        color: Colors.black54,
+                        border: Border.all(color: hudColor, width: 2),
+                        borderRadius: BorderRadius.circular(12),
                       ),
                       child: DefaultTextStyle(
-                        style: const TextStyle(
-                          color: Colors.black,
-                          fontSize: 13,
-                        ),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceAround,
+                        style: const TextStyle(color: Colors.white),
+                        child: Column(
                           children: [
-                            // STAGE column
-                            Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              mainAxisSize: MainAxisSize.min,
+                            // Status row
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
                               children: [
-                                const Text(
-                                  'STAGE',
-                                  style: TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 11,
+                                // Stage status
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      const Text(
+                                        'STAGE',
+                                        style: TextStyle(
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w600,
+                                          color: Colors.white70,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        _currentStage.isNotEmpty
+                                            ? _currentStage.toUpperCase()
+                                            : 'INIT',
+                                        style: const TextStyle(
+                                          fontSize: 18,
+                                          fontWeight: FontWeight.bold,
+                                          color: Colors.white,
+                                        ),
+                                      ),
+                                      Text(
+                                        'Confidence: ${_stageProbability != null ? (_stageProbability! * 100).toStringAsFixed(0) : "0"}%',
+                                        style: const TextStyle(
+                                          fontSize: 10,
+                                          color: Colors.white60,
+                                        ),
+                                      ),
+                                    ],
                                   ),
                                 ),
-                                Text(
-                                  _stageProbability != null
-                                      ? _stageProbability!.toStringAsFixed(2)
-                                      : '0.00',
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 12,
+                                
+                                // Reps counter
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 16,
+                                    vertical: 8,
                                   ),
-                                ),
-                                Text(
-                                  _currentStage.isNotEmpty
-                                      ? _currentStage
-                                      : 'init',
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 12,
+                                  decoration: BoxDecoration(
+                                    color: Colors.white.withValues(alpha: 0.1),
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: Column(
+                                    children: [
+                                      const Text(
+                                        'REPS',
+                                        style: TextStyle(
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w600,
+                                          color: Colors.white70,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        '$_counter',
+                                        style: const TextStyle(
+                                          fontSize: 28,
+                                          fontWeight: FontWeight.bold,
+                                          color: Colors.white,
+                                        ),
+                                      ),
+                                    ],
                                   ),
                                 ),
                               ],
                             ),
-
-                            // COUNTER column
-                            Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              mainAxisSize: MainAxisSize.min,
+                            
+                            const SizedBox(height: 12),
+                            const Divider(color: Colors.white24, height: 1),
+                            const SizedBox(height: 12),
+                            
+                            // Form analysis row
+                            Row(
                               children: [
-                                const Text(
-                                  'COUNTER',
-                                  style: TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 11,
+                                // Knee-Over-Toe status
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      const Text(
+                                        'KNEE-OVER-TOE',
+                                        style: TextStyle(
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w600,
+                                          color: Colors.white70,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 4),
+                                      Row(
+                                        children: [
+                                          Icon(
+                                            _errorClass == 'K'
+                                                ? Icons.warning_rounded
+                                                : Icons.check_circle_rounded,
+                                            color:
+                                                _errorClass == 'K'
+                                                    ? Colors.red
+                                                    : Colors.green,
+                                            size: 16,
+                                          ),
+                                          const SizedBox(width: 6),
+                                          Text(
+                                            _errorClass == 'K'
+                                                ? 'Detected'
+                                                : 'Good Form',
+                                            style: TextStyle(
+                                              fontSize: 13,
+                                              fontWeight: FontWeight.bold,
+                                              color:
+                                                  _errorClass == 'K'
+                                                      ? Colors.red
+                                                      : Colors.green,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      if (_errorProbability != null)
+                                        Text(
+                                          'Confidence: ${(_errorProbability! * 100).toStringAsFixed(0)}%',
+                                          style: const TextStyle(
+                                            fontSize: 10,
+                                            color: Colors.white60,
+                                          ),
+                                        ),
+                                    ],
                                   ),
                                 ),
-                                Text(
-                                  '$_counter',
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 12,
+                                
+                                // Knee angles
+                                if (_kneeAnalysis != null)
+                                  Container(
+                                    padding: const EdgeInsets.all(8),
+                                    decoration: BoxDecoration(
+                                      color: Colors.white.withValues(alpha: 0.1),
+                                      borderRadius: BorderRadius.circular(6),
+                                    ),
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Row(
+                                          children: [
+                                            const Text(
+                                              'R: ',
+                                              style: TextStyle(
+                                                fontSize: 11,
+                                                color: Colors.white70,
+                                              ),
+                                            ),
+                                            Text(
+                                              '${(_kneeAnalysis!['right']['angle'] as double).toStringAsFixed(0)}°',
+                                              style: TextStyle(
+                                                fontSize: 12,
+                                                fontWeight: FontWeight.bold,
+                                                color:
+                                                    _kneeAnalysis!['right']['error']
+                                                        ? Colors.red
+                                                        : Colors.green,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                        const SizedBox(height: 2),
+                                        Row(
+                                          children: [
+                                            const Text(
+                                              'L: ',
+                                              style: TextStyle(
+                                                fontSize: 11,
+                                                color: Colors.white70,
+                                              ),
+                                            ),
+                                            Text(
+                                              '${(_kneeAnalysis!['left']['angle'] as double).toStringAsFixed(0)}°',
+                                              style: TextStyle(
+                                                fontSize: 12,
+                                                fontWeight: FontWeight.bold,
+                                                color:
+                                                    _kneeAnalysis!['left']['error']
+                                                        ? Colors.red
+                                                        : Colors.green,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ],
+                                    ),
                                   ),
-                                ),
-                              ],
-                            ),
-
-                            // K_O_T (Knee-Over-Toe) column
-                            Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                const Text(
-                                  'K_O_T',
-                                  style: TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 11,
-                                  ),
-                                ),
-                                Text(
-                                  _errorProbability != null
-                                      ? _errorProbability!.toStringAsFixed(2)
-                                      : '--',
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 12,
-                                  ),
-                                ),
-                                Text(
-                                  _errorClass ?? '--',
-                                  style: TextStyle(
-                                    color:
-                                        _errorClass == 'K'
-                                            ? Colors.red
-                                            : Colors.white,
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 12,
-                                  ),
-                                ),
                               ],
                             ),
                           ],
@@ -466,79 +571,26 @@ class _LungesState extends State<Lunges> {
                     ),
                   ),
 
-                  // Initialization status indicator
-                  Positioned(
-                    top: 90,
-                    left: 16,
-                    right: 16,
-                    child: Container(
-                      padding: const EdgeInsets.all(8),
-                      decoration: BoxDecoration(
-                        color:
-                            _classifiersReady
-                                ? Colors.green.withValues(alpha: 0.8)
-                                : Colors.red.withValues(alpha: 0.8),
-                        borderRadius: BorderRadius.circular(4),
-                      ),
-                      child: Text(
-                        'Init: ${_initializationAttempted ? "YES" : "NO"} | Status: $_initializationStatus',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 11,
-                          fontWeight: FontWeight.bold,
-                        ),
-                        textAlign: TextAlign.center,
-                      ),
-                    ),
-                  ),
-
-                  // Knee angle info (bottom left)
-                  if (_kneeAnalysis != null)
+                  // Initialization status indicator (only show if not ready)
+                  if (!_classifiersReady)
                     Positioned(
-                      bottom: 16,
+                      top: 90,
                       left: 16,
+                      right: 16,
                       child: Container(
                         padding: const EdgeInsets.all(8),
                         decoration: BoxDecoration(
-                          color: Colors.black.withValues(alpha: 0.7),
-                          borderRadius: BorderRadius.circular(8),
+                          color: Colors.red.withValues(alpha: 0.8),
+                          borderRadius: BorderRadius.circular(4),
                         ),
-                        child: DefaultTextStyle(
+                        child: Text(
+                          'Init: ${_initializationAttempted ? "YES" : "NO"} | Status: $_initializationStatus',
                           style: const TextStyle(
                             color: Colors.white,
                             fontSize: 11,
+                            fontWeight: FontWeight.bold,
                           ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                'R Knee: ${(_kneeAnalysis!['right']['angle'] as double).toStringAsFixed(0)}°',
-                                style: TextStyle(
-                                  color:
-                                      _kneeAnalysis!['right']['error']
-                                          ? Colors.red
-                                          : Colors.white,
-                                ),
-                              ),
-                              Text(
-                                'L Knee: ${(_kneeAnalysis!['left']['angle'] as double).toStringAsFixed(0)}°',
-                                style: TextStyle(
-                                  color:
-                                      _kneeAnalysis!['left']['error']
-                                          ? Colors.red
-                                          : Colors.white,
-                                ),
-                              ),
-                              if (_kneeAnalysis!['error'] as bool)
-                                const Text(
-                                  'Check knee angles!',
-                                  style: TextStyle(
-                                    color: Colors.red,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                            ],
-                          ),
+                          textAlign: TextAlign.center,
                         ),
                       ),
                     ),
@@ -611,6 +663,7 @@ class _LungesPainter extends CustomPainter {
   final String currentStage;
   final InputImageRotation rotation;
   final bool mirror;
+  final String? errorClass;
 
   _LungesPainter({
     required this.pose,
@@ -620,6 +673,7 @@ class _LungesPainter extends CustomPainter {
     required this.currentStage,
     required this.rotation,
     required this.mirror,
+    this.errorClass,
   });
 
   @override
@@ -657,14 +711,14 @@ class _LungesPainter extends CustomPainter {
 
     final linePaint =
         Paint()
-          ..color = Colors.greenAccent
+          ..color = errorClass == 'K' ? Colors.orangeAccent : Colors.greenAccent
           ..strokeWidth = 3
           ..style = PaintingStyle.stroke
           ..strokeCap = StrokeCap.round;
 
     final jointPaint =
         Paint()
-          ..color = Colors.green
+          ..color = errorClass == 'K' ? Colors.orange : Colors.green
           ..style = PaintingStyle.fill;
 
     // Draw skeleton
@@ -736,5 +790,6 @@ class _LungesPainter extends CustomPainter {
   bool shouldRepaint(covariant _LungesPainter old) =>
       old.pose != pose ||
       old.kneeAnalysis != kneeAnalysis ||
-      old.currentStage != currentStage;
+      old.currentStage != currentStage ||
+      old.errorClass != errorClass;
 }

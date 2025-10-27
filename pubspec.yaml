@@ -86,7 +86,6 @@ flutter:
     - assets/onnx/form_knn.onnx
     - assets/onnx/squats_model.onnx
     - assets/onnx/shoulder_press_model.onnx
-    - assets/onnx/push_up_model.onnx
     - assets/json/form_labels.json
     - assets/json/scaler_params.json
     - assets/json/label_encoder.json

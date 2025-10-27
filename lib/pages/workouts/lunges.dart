@@ -56,7 +56,7 @@ class _LungesState extends State<Lunges> {
   int _counter = 0;
 
   // Thresholds (matching Python)
-  static const double predictionProbabilityThreshold = 0.8;
+  static const double predictionProbabilityThreshold = 0.6; // Lowered from 0.8 to make stage detection easier
   static const List<double> angleThresholds = [60.0, 135.0];
 
   // Knee angle analysis results
@@ -244,17 +244,24 @@ class _LungesState extends State<Lunges> {
       _stagePredictedClass = stageResult['class'];
       _stageProbability = stageResult['probability'];
 
+      // Store previous stage to detect transitions
+      final previousStage = _currentStage;
+
       // Update current stage based on prediction (matching Python logic)
       if (_stagePredictedClass == 'I' && _stageProbability! >= predictionProbabilityThreshold) {
         _currentStage = 'init';
       } else if (_stagePredictedClass == 'M' && _stageProbability! >= predictionProbabilityThreshold) {
         _currentStage = 'mid';
       } else if (_stagePredictedClass == 'D' && _stageProbability! >= predictionProbabilityThreshold) {
-        // Count rep when transitioning from mid/init to down
-        if (_currentStage == 'mid' || _currentStage == 'init') {
-          _counter += 1;
-        }
         _currentStage = 'down';
+      }
+
+      // Count rep when completing the movement (down → init/mid)
+      if (previousStage == 'down' && (_currentStage == 'init' || _currentStage == 'mid')) {
+        _counter += 1;
+        if (kDebugMode) {
+          print('[Lunges] ✅ REP COUNTED! Total: $_counter (transition: down → $_currentStage)');
+        }
       }
 
       // ═══════════════════════════════════════════════════════════════
@@ -267,23 +274,16 @@ class _LungesState extends State<Lunges> {
       );
 
       // ═══════════════════════════════════════════════════════════════
-      // 4) ERROR DETECTION (Knee-Over-Toe) - Only in "down" stage
+      // 4) ERROR DETECTION (Knee-Over-Toe) - Always run for debugging
       // ═══════════════════════════════════════════════════════════════
-      if (_currentStage == 'down') {
-        final errorResult = _errorClassifier.predict(features);
-        _errorClass = errorResult['class'];
-        _errorProbability = errorResult['probability'];
-      } else {
-        _errorClass = null;
-        _errorProbability = null;
-      }
+      final errorResult = _errorClassifier.predict(features);
+      _errorClass = errorResult['class'];
+      _errorProbability = errorResult['probability'];
 
       if (kDebugMode) {
-        print('[Lunges] Stage: $_currentStage ($_stagePredictedClass @ ${(_stageProbability! * 100).toStringAsFixed(0)}%) | '
+        print('[Lunges] Stage: $previousStage → $_currentStage ($_stagePredictedClass @ ${(_stageProbability! * 100).toStringAsFixed(0)}%) | '
               'Counter: $_counter | '
-              'Error: $_errorClass @ ${_errorProbability != null ? (_errorProbability! * 100).toStringAsFixed(0) : "N/A"}%');
-        print('[Lunges] Features extracted: ${features.length} values');
-        print('[Lunges] Probability value: $_stageProbability (formatted: ${_stageProbability!.toStringAsFixed(2)})');
+              'K-O-T: $_errorClass (${_errorClass == "C" ? "Correct" : "Knee Over Toe"}) @ ${(_errorProbability! * 100).toStringAsFixed(0)}%');
       }
 
     } catch (e) {

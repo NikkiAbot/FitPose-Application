@@ -34,7 +34,7 @@ class _PushUpState extends State<PushUp> {
   String _feedback = 'Get into push-up position';
   int _pushUpCount = 0;
   int _setCount = 0;
-  final int _repsPerSet = 10; // changeable target per set
+  final int _repsPerSet = 8; // 8 reps per set
   bool _downPosition = false;
 
   String _elbowAngleDisplay = '-';
@@ -258,11 +258,13 @@ class _PushUpState extends State<PushUp> {
         _downPosition &&
         torsoAligned) {
       if (_sessionActive) {
-        _pushUpCount++;
+        _pushUpCount++; // running total reps (never reset per set)
         _downPosition = false;
-        if (_pushUpCount >= _repsPerSet) {
-          _setCount++;
-          _pushUpCount = 0;
+
+        // Auto increment sets for every 8 reps
+        final newSets = _pushUpCount ~/ _repsPerSet;
+        if (newSets > _setCount) {
+          _setCount = newSets;
           _feedback = 'Set complete ✅ Total sets: $_setCount';
         } else {
           _feedback = 'Push-up complete ✅';
@@ -363,11 +365,11 @@ class _PushUpState extends State<PushUp> {
           (_) => AlertDialog(
             title: const Text('Push-Up Instructions'),
             content: const Text(
-              '1️⃣ Get into push-up position (side view).\n'
-              '2️⃣ Lower your body vertically until elbows are bent (~70°).\n'
-              '3️⃣ Push back up until arms are straight (~150°).\n'
-              '4️⃣ Keep your body straight from shoulders to ankles.\n'
-              '5️⃣ Camera should capture full body side profile.',
+              '1. Get into push-up position (side view).\n'
+              '2. Lower your body vertically until elbows are bent (~70°).\n'
+              '3. Push back up until arms are straight (~150°).\n'
+              '4. Keep your body straight from shoulders to ankles.\n'
+              '5. Camera should capture full body side profile.',
             ),
             actions: [
               ElevatedButton(
@@ -414,13 +416,12 @@ class _PushUpState extends State<PushUp> {
     try {
       final user = FirebaseAuth.instance.currentUser;
       final userId = user?.uid ?? 'anonymous';
-      final totalReps = _setCount * _repsPerSet + _pushUpCount;
       final durationSeconds = _elapsed.inSeconds;
 
+      // Save only reps (total) and sets; remove 'total'
       await FirebaseFirestore.instance.collection('pushup_sessions').add({
-        'reps': _pushUpCount,
-        'sets': _setCount,
-        'total': totalReps,
+        'reps': _pushUpCount, // total overall reps
+        'sets': _setCount, // auto-calculated as reps ~/ 8
         'duration': durationSeconds,
         'timestamp': FieldValue.serverTimestamp(),
         'userId': userId,
@@ -613,7 +614,7 @@ class _PushUpState extends State<PushUp> {
                                   ),
                                 ),
                                 Text(
-                                  '$_pushUpCount',
+                                  '$_pushUpCount', // total reps for the session
                                   style: const TextStyle(
                                     fontSize: 26,
                                     fontWeight: FontWeight.bold,
@@ -622,7 +623,7 @@ class _PushUpState extends State<PushUp> {
                                 ),
                                 const SizedBox(height: 2),
                                 Text(
-                                  'Sets: $_setCount | Total: ${_setCount * _repsPerSet + _pushUpCount}',
+                                  'Sets: $_setCount', // remove " | Total: ..."
                                   style: const TextStyle(
                                     fontSize: 12,
                                     color: Colors.white70,

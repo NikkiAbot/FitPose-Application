@@ -63,7 +63,7 @@ class _ShoulderPressState extends State<ShoulderPress> {
   // NEW: Sets/session tracking
   int _setsCount = 0;
   int _repsInCurrentSet = 0;
-  static const int repsPerSet = 12;
+  static const int repsPerSet = 8; // was 12; now 1 set per 8 reps
 
   // Session timer fields
   bool _sessionActive = false;
@@ -615,11 +615,10 @@ class _ShoulderPressState extends State<ShoulderPress> {
           // Only increment when a session is active
           if (_sessionActive) {
             _reps += 1;
-            _repsInCurrentSet += 1;
-            if (_repsInCurrentSet >= repsPerSet) {
-              _setsCount += 1;
-              _repsInCurrentSet = 0;
-            }
+            // Derive sets from total reps: 1 set every 8 reps
+            _setsCount = _reps ~/ repsPerSet;
+            // Remainder reps in the current (incomplete) set
+            _repsInCurrentSet = _reps % repsPerSet;
           }
           _feedback = 'Rep ✓';
         } else {
@@ -899,8 +898,9 @@ class _ShoulderPressState extends State<ShoulderPress> {
                                           fontWeight: FontWeight.bold,
                                         ),
                                       ),
+                                      // Removed the "Total" display; show only Sets
                                       Text(
-                                        'Sets: $_setsCount | Total: ${_setsCount * (_reps > 0 ? _reps : 0)}',
+                                        'Sets: $_setsCount',
                                         style: const TextStyle(
                                           color: Colors.white70,
                                           fontSize: 9,

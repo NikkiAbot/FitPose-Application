@@ -63,9 +63,8 @@ class _LungesState extends State<Lunges> {
   int _counter = 0;
 
   // Reps/sets tracking
-  static const int _repsPerSet = 12;
+  static const int _repsPerSet = 8; // changed from 12 to 8
   int get _setsCompleted => _counter ~/ _repsPerSet;
-  int get _repsInCurrentSet => _counter % _repsPerSet;
 
   // New: store counter at session start so we can compute session-only reps
   int? _counterAtSessionStart;
@@ -187,16 +186,30 @@ class _LungesState extends State<Lunges> {
     });
 
     // Save session to Firestore (only after start and end)
-    await _saveSessionToFirestore();
+    final saved = await _saveSessionToFirestore();
+
+    if (!mounted) return;
+    if (saved) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text('Session Saved'),
+          behavior: SnackBarBehavior.floating,
+          margin: const EdgeInsets.only(bottom: 24, left: 16, right: 16),
+          duration: const Duration(seconds: 2),
+          backgroundColor: Colors.green,
+        ),
+      );
+    }
   }
 
   // New: persist session document to 'lunges_sessions'
-  Future<void> _saveSessionToFirestore() async {
+  Future<bool> _saveSessionToFirestore() async {
+    bool success = false;
     try {
       final start = _sessionStart ?? DateTime.now();
       start.add(_sessionElapsed);
       final sessionReps = _counter - (_counterAtSessionStart ?? 0);
-      final sessionSets = sessionReps ~/ 12;
+      final sessionSets = sessionReps ~/ _repsPerSet; // use 8-per-set rule
       final durationSeconds = _sessionElapsed.inSeconds;
       final userId = FirebaseAuth.instance.currentUser?.uid ?? 'anonymous';
 
@@ -214,6 +227,7 @@ class _LungesState extends State<Lunges> {
       if (kDebugMode) {
         print('[Lunges] ✅ Session saved: $data');
       }
+      success = true;
     } catch (e, st) {
       if (kDebugMode) {
         print('[Lunges] ❌ Failed to save session: $e');
@@ -223,6 +237,7 @@ class _LungesState extends State<Lunges> {
       // clear counterAtSessionStart so next session is fresh
       _counterAtSessionStart = null;
     }
+    return success;
   }
 
   // Simple mm:ss formatter
@@ -523,10 +538,9 @@ class _LungesState extends State<Lunges> {
                                         ),
                                       ),
                                       const SizedBox(height: 4),
-                                      // Show reps in current set as primary number, and total in smaller text
+                                      // Display total overall reps
                                       Text(
-                                        '${_repsInCurrentSet == 0 && _counter > 0 ? 12 : _repsInCurrentSet}',
-                                        // If current-in-set is 0 but total > 0, show 12 to indicate a completed set
+                                        '$_counter',
                                         style: const TextStyle(
                                           fontSize: 28,
                                           fontWeight: FontWeight.bold,
@@ -534,8 +548,9 @@ class _LungesState extends State<Lunges> {
                                         ),
                                       ),
                                       const SizedBox(height: 4),
+                                      // Remove the " •  Total: $_counter"
                                       Text(
-                                        'Sets: $_setsCompleted  •  Total: $_counter',
+                                        'Sets: $_setsCompleted',
                                         style: const TextStyle(
                                           fontSize: 10,
                                           color: Colors.white60,

@@ -437,8 +437,9 @@ class _WorkoutAnalyticsWidgetState extends State<WorkoutAnalyticsWidget> {
                                                 .toSet();
                                         if (!daysWithData.contains(
                                           value.toInt(),
-                                        ))
+                                        )) {
                                           return const SizedBox();
+                                        }
                                         return SideTitleWidget(
                                           meta: meta,
                                           child: Text(
@@ -472,8 +473,9 @@ class _WorkoutAnalyticsWidgetState extends State<WorkoutAnalyticsWidget> {
                                           ];
                                           int index = value.toInt();
                                           if (index < 0 ||
-                                              index >= labels.length)
+                                              index >= labels.length) {
                                             return const SizedBox();
+                                          }
                                           return SideTitleWidget(
                                             meta: meta,
                                             child: Text(
@@ -499,8 +501,9 @@ class _WorkoutAnalyticsWidgetState extends State<WorkoutAnalyticsWidget> {
                                           ];
                                           int index = value.toInt();
                                           if (index < 0 ||
-                                              index >= labels.length)
+                                              index >= labels.length) {
                                             return const SizedBox();
+                                          }
                                           return SideTitleWidget(
                                             meta: meta,
                                             child: Text(

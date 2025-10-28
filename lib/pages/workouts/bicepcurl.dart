@@ -47,7 +47,7 @@ class _BicepCurlState extends State<BicepCurl> {
 
   // NEW: set tracking
   int _setsCount = 0; // total completed sets
-  int _repsInCurrentSet = 0; // reps counted inside the current set
+  int _repsInCurrentSet = 0; // reps remainder inside the current set
   static const int repsPerSet = 8;
 
   // ═══════════════════════════════════════════════════════════════
@@ -428,21 +428,17 @@ class _BicepCurlState extends State<BicepCurl> {
       if (angSmooth > upThreshold) {
         if (_cycleOk) {
           if (_sessionActive) {
+            // Count rep and derive sets from total reps (every 8 reps = +1 set)
             _curlReps += 1;
-            _repsInCurrentSet += 1; // track reps inside current set
-            // when reps in set reach threshold, increment sets and reset
-            if (_repsInCurrentSet >= repsPerSet) {
-              _setsCount += 1;
-              _repsInCurrentSet = 0;
-            }
+            _setsCount = _curlReps ~/ repsPerSet;
+            _repsInCurrentSet = _curlReps % repsPerSet;
             _feedback = 'Rep ✓';
             if (kDebugMode) {
               print(
-                '[FSM] ✅ Rep counted! Total: $_curlReps, Sets: $_setsCount, InSet: $_repsInCurrentSet',
+                '[FSM] ✅ Rep counted! Reps: $_curlReps, Sets: $_setsCount, InSet: $_repsInCurrentSet',
               );
             }
           } else {
-            // session not active => do not count reps
             _feedback = 'Press Start to record reps';
             if (kDebugMode) {
               print('[FSM] Rep detected but session not active - not counted');
@@ -700,7 +696,7 @@ class _BicepCurlState extends State<BicepCurl> {
                                   ),
                                 ),
 
-                                // --- Reps/Sets/Total box ---
+                                // --- Reps/Sets box ---
                                 AnimatedOpacity(
                                   opacity: 1,
                                   duration: const Duration(milliseconds: 400),
@@ -749,8 +745,9 @@ class _BicepCurlState extends State<BicepCurl> {
                                           ),
                                         ),
                                         const SizedBox(height: 2),
+                                        // Removed confusing "Total" display; show only Sets
                                         Text(
-                                          'Sets: $_setsCount | Total: ${_setsCount * (_curlReps > 0 ? _curlReps : 0)}',
+                                          'Sets: $_setsCount',
                                           style: const TextStyle(
                                             color: Colors.white70,
                                             fontSize: 11,

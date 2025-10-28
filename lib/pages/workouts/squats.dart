@@ -52,7 +52,7 @@ class _SquatsState extends State<Squats> {
   // NEW: Sets/session tracking
   int _setsCount = 0;
   int _repsInCurrentSet = 0;
-  static const int repsPerSet = 12;
+  static const int repsPerSet = 8; // was 12
 
   // Session timer fields
   bool _sessionActive = false;
@@ -288,11 +288,9 @@ class _SquatsState extends State<Squats> {
           // Only increment when a session is active
           if (_sessionActive) {
             _reps += 1;
-            _repsInCurrentSet += 1;
-            if (_repsInCurrentSet >= repsPerSet) {
-              _setsCount += 1;
-              _repsInCurrentSet = 0;
-            }
+            // Derive sets and remainder directly from total reps
+            _setsCount = _reps ~/ repsPerSet;
+            _repsInCurrentSet = _reps % repsPerSet;
           }
           _feedback = 'Rep ✓';
         } else {
@@ -345,11 +343,14 @@ class _SquatsState extends State<Squats> {
       if (floatData == null || floatData.length < 2) return;
 
       final modelScore = floatData[0];
-      final repDetected = floatData[1] > 0.5;
 
       // Combine ONNX output with rule-based posture
       _postureGood = _postureGood && modelScore > 0.7;
-      if (repDetected && !_anomaly && _postureGood) _reps += 1;
+
+      // IMPORTANT: Do NOT increment reps here to avoid double-counting.
+      // We only count reps in the rule-based FSM above.
+      // if (repDetected && !_anomaly && _postureGood) _reps += 1; // removed
+
       _feedback = _postureGood ? 'Good form' : 'Fix form';
     } catch (e) {
       if (kDebugMode) print('[ONNX] Inference failed: $e');
@@ -618,7 +619,7 @@ class _SquatsState extends State<Squats> {
                                       ),
                                       const SizedBox(height: 6),
                                       Text(
-                                        'Sets: $_setsCount  |  Total: $_reps',
+                                        'Sets: $_setsCount',
                                         textAlign: TextAlign.center,
                                         style: TextStyle(
                                           color: Colors.white70,

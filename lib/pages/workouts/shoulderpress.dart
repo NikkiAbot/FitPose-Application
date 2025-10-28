@@ -684,7 +684,7 @@ class _ShoulderPressState extends State<ShoulderPress> {
       final doc = <String, dynamic>{
         'userId': _userId,
         'timestamp': FieldValue.serverTimestamp(),
-        'sessionDurationSeconds': _sessionElapsed.inSeconds,
+        'duration': _sessionElapsed.inSeconds,
         'reps': _reps,
         'sets': _setsCount,
         'repsInCurrentSet': _repsInCurrentSet,

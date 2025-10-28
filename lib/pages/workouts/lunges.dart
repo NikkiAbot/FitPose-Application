@@ -204,9 +204,9 @@ class _LungesState extends State<Lunges> {
         'userId': userId,
         'reps': sessionReps,
         'sets': sessionSets,
-        'duration_seconds': durationSeconds,
+        'duration': durationSeconds,
         'duration_formatted': _formatDuration(_sessionElapsed),
-        'created_at': FieldValue.serverTimestamp(),
+        'timestamp': FieldValue.serverTimestamp(),
       };
 
       await FirebaseFirestore.instance.collection('lunges_sessions').add(data);

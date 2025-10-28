@@ -499,7 +499,9 @@ class _PushUpState extends State<PushUp> {
                         ElevatedButton(
                           onPressed: _sessionActive ? null : _startSession,
                           style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.green.withOpacity(0.25),
+                            backgroundColor: Colors.green.withValues(
+                              alpha: 0.25,
+                            ),
                             foregroundColor: Colors.greenAccent,
                             elevation: 0,
                             padding: const EdgeInsets.symmetric(
@@ -522,7 +524,7 @@ class _PushUpState extends State<PushUp> {
                         ElevatedButton(
                           onPressed: _sessionActive ? _endSession : null,
                           style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.red.withOpacity(0.25),
+                            backgroundColor: Colors.red.withValues(alpha: 0.25),
                             foregroundColor: Colors.redAccent,
                             elevation: 0,
                             padding: const EdgeInsets.symmetric(

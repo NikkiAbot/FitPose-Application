@@ -148,7 +148,7 @@ class _PlankState extends State<Plank> {
       final docRef =
           FirebaseFirestore.instance.collection('plank_sessions').doc();
       await docRef.set({
-        'duration_seconds': _holdTime.inSeconds,
+        'duration': _holdTime.inSeconds,
         'duration_readable': formattedHoldTime,
         'timestamp': FieldValue.serverTimestamp(),
         'userId': userId,

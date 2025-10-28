@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math' as math;
 import 'dart:collection'; // For Queue
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
@@ -99,7 +100,9 @@ class _BicepCurlState extends State<BicepCurl> {
   Duration _sessionElapsed = Duration.zero;
 
   // Firebase user id (existing user document)
-  static const String _userId = 'sOhSvvCkO4QWQiVflGtNJkSGSzf1';
+  // Resolve the current Firebase Auth user dynamically.
+  // Requires: import 'package:firebase_auth/firebase_auth.dart';
+  String? get _userId => FirebaseAuth.instance.currentUser?.uid;
 
   @override
   void initState() {
@@ -424,18 +427,26 @@ class _BicepCurlState extends State<BicepCurl> {
       // State transition: flexed → extended (raising phase completes)
       if (angSmooth > upThreshold) {
         if (_cycleOk) {
-          _curlReps += 1;
-          _repsInCurrentSet += 1; // track reps inside current set
-          // when reps in set reach threshold, increment sets and reset
-          if (_repsInCurrentSet >= repsPerSet) {
-            _setsCount += 1;
-            _repsInCurrentSet = 0;
-          }
-          _feedback = 'Rep ✓';
-          if (kDebugMode) {
-            print(
-              '[FSM] ✅ Rep counted! Total: $_curlReps, Sets: $_setsCount, InSet: $_repsInCurrentSet',
-            );
+          if (_sessionActive) {
+            _curlReps += 1;
+            _repsInCurrentSet += 1; // track reps inside current set
+            // when reps in set reach threshold, increment sets and reset
+            if (_repsInCurrentSet >= repsPerSet) {
+              _setsCount += 1;
+              _repsInCurrentSet = 0;
+            }
+            _feedback = 'Rep ✓';
+            if (kDebugMode) {
+              print(
+                '[FSM] ✅ Rep counted! Total: $_curlReps, Sets: $_setsCount, InSet: $_repsInCurrentSet',
+              );
+            }
+          } else {
+            // session not active => do not count reps
+            _feedback = 'Press Start to record reps';
+            if (kDebugMode) {
+              print('[FSM] Rep detected but session not active - not counted');
+            }
           }
         } else {
           _feedback = 'Fix form';
@@ -508,6 +519,10 @@ class _BicepCurlState extends State<BicepCurl> {
         if (!mounted) return;
         setState(() => _sessionElapsed = _sessionStopwatch.elapsed);
       });
+      // reset counters for a fresh session
+      _curlReps = 0;
+      _setsCount = 0;
+      _repsInCurrentSet = 0;
     });
   }
 
@@ -525,7 +540,7 @@ class _BicepCurlState extends State<BicepCurl> {
     _saveSessionMetrics();
   }
 
-  // NEW: persist session metrics to Firestore under 'bicep_metrics'
+  // NEW: persist session metrics to Firestore under 'bicep_sessions'
   Future<void> _saveSessionMetrics() async {
     try {
       final firestore = FirebaseFirestore.instance;
@@ -536,12 +551,8 @@ class _BicepCurlState extends State<BicepCurl> {
         'reps': _curlReps,
         'sets': _setsCount,
         'repsInCurrentSet': _repsInCurrentSet,
-        // store recent angle buffers (converted to lists)
-        'elbowAngles': _angBuffer.toList(),
-        'torsoInclinations': _inclBuffer.toList(),
-        'dxValues': _dxBuffer.toList(),
       };
-      await firestore.collection('bicep_metrics').add(doc);
+      await firestore.collection('bicep_sessions').add(doc);
       if (mounted) {
         ScaffoldMessenger.of(
           context,
@@ -614,7 +625,7 @@ class _BicepCurlState extends State<BicepCurl> {
                       ),
                     ),
 
-                  // HUD with metrics and ML predictions (matching shoulder press)
+                  // HUD container
                   Positioned(
                     top: 16,
                     left: 16,
@@ -631,114 +642,275 @@ class _BicepCurlState extends State<BicepCurl> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            // UPDATED: show sets count in HUD
-                            Text(
-                              'State: $_fsmState   Reps: $_curlReps   Sets: $_setsCount',
-                              style: const TextStyle(
-                                fontWeight: FontWeight.bold,
-                                fontSize: 15,
-                              ),
-                            ),
-
-                            // Angle measurements
-                            if (_elbowAngle != null)
-                              Text(
-                                'Elbow: ${_elbowAngle!.toStringAsFixed(0)}°',
-                                style: const TextStyle(fontSize: 13),
-                              ),
-                            if (_torsoAngle != null)
-                              Text(
-                                'Torso: ${_torsoAngle!.toStringAsFixed(0)}°',
-                                style: const TextStyle(fontSize: 13),
-                              ),
-                            if (_dx != null)
-                              Text(
-                                'dx: ${_dx!.toStringAsFixed(3)}',
-                                style: const TextStyle(fontSize: 13),
-                              ),
-
-                            // ML prediction display (matching shoulder press)
-                            if (_classifierReady) ...[
-                              const Divider(color: Colors.white24, height: 12),
-                              Text(
-                                'Form: $_mlLabel',
-                                style: TextStyle(
-                                  color:
-                                      _mlLabel == 'good'
-                                          ? Colors.greenAccent
-                                          : Colors.orangeAccent,
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 14,
-                                ),
-                              ),
-                              if (_mlConfidence > 0)
-                                Text(
-                                  'Confidence: ${(_mlConfidence * 100).toStringAsFixed(1)}%',
-                                  style: const TextStyle(fontSize: 12),
-                                ),
-                            ],
-
-                            if (!_classifierReady)
-                              const Text(
-                                'Loading classifier...',
-                                style: TextStyle(
-                                  color: Colors.yellowAccent,
-                                  fontSize: 12,
-                                ),
-                              ),
-
-                            const Divider(color: Colors.white24, height: 12),
-
-                            // Posture status
-                            Text(
-                              _postureStatus,
-                              style: TextStyle(
-                                color: hudColor,
-                                fontWeight: FontWeight.w600,
-                                fontSize: 13,
-                              ),
-                            ),
-                            const SizedBox(height: 4),
-
-                            // Feedback
-                            Text(
-                              _feedback,
-                              style: TextStyle(
-                                color:
-                                    _postureGood
-                                        ? Colors.greenAccent
-                                        : Colors.orangeAccent,
-                                fontWeight: FontWeight.w600,
-                                fontSize: 13,
-                              ),
-                            ),
-
-                            // Session timer display
+                            // --- ML Form + Reps Row ---
                             Row(
                               mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text(
-                                  'Session: ${_sessionActive ? "Running" : "Stopped"}',
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 14,
+                                // ML Form (left, no box)
+                                AnimatedOpacity(
+                                  opacity: _classifierReady ? 1.0 : 0.5,
+                                  duration: const Duration(milliseconds: 300),
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      const Text(
+                                        'ML Form',
+                                        style: TextStyle(
+                                          color: Colors.white70,
+                                          fontSize: 13,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                      AnimatedSwitcher(
+                                        duration: const Duration(
+                                          milliseconds: 300,
+                                        ),
+                                        transitionBuilder:
+                                            (child, anim) => FadeTransition(
+                                              opacity: anim,
+                                              child: child,
+                                            ),
+                                        child: Text(
+                                          _mlLabel.isNotEmpty
+                                              ? _mlLabel
+                                              : '...',
+                                          key: ValueKey(_mlLabel),
+                                          style: TextStyle(
+                                            color:
+                                                _mlLabel == 'good'
+                                                    ? Colors.greenAccent
+                                                    : Colors.orangeAccent,
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 24,
+                                          ),
+                                        ),
+                                      ),
+                                      if (_mlConfidence > 0)
+                                        Text(
+                                          'Confidence: ${(_mlConfidence * 100).toStringAsFixed(1)}%',
+                                          style: const TextStyle(
+                                            color: Colors.white70,
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.w400,
+                                          ),
+                                        ),
+                                    ],
                                   ),
                                 ),
-                                Text(
-                                  _formattedDuration(_sessionElapsed),
-                                  style: const TextStyle(
-                                    fontSize: 14,
-                                    fontWeight: FontWeight.bold,
+
+                                // --- Reps/Sets/Total box ---
+                                AnimatedOpacity(
+                                  opacity: 1,
+                                  duration: const Duration(milliseconds: 400),
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 10,
+                                      vertical: 6,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: Colors.black87,
+                                      borderRadius: BorderRadius.circular(8),
+                                      border: Border.all(
+                                        color: Colors.white24,
+                                        width: 1,
+                                      ),
+                                    ),
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.center,
+                                      children: [
+                                        const Text(
+                                          'Reps',
+                                          style: TextStyle(
+                                            color: Colors.white70,
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w500,
+                                          ),
+                                        ),
+                                        AnimatedSwitcher(
+                                          duration: const Duration(
+                                            milliseconds: 300,
+                                          ),
+                                          transitionBuilder:
+                                              (child, anim) => FadeTransition(
+                                                opacity: anim,
+                                                child: child,
+                                              ),
+                                          child: Text(
+                                            '$_curlReps',
+                                            key: ValueKey(_curlReps),
+                                            style: const TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 24,
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          ),
+                                        ),
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          'Sets: $_setsCount | Total: ${_setsCount * (_curlReps > 0 ? _curlReps : 0)}',
+                                          style: const TextStyle(
+                                            color: Colors.white70,
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.w400,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
                                   ),
+                                ),
+                              ],
+                            ),
+
+                            // ✅ Combined "State" and "Session" Row (aligned left)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 4),
+                              child: Row(
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceBetween,
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  // Left side: State + Session (grouped together)
+                                  Row(
+                                    children: [
+                                      const Text(
+                                        'State: ',
+                                        style: TextStyle(
+                                          color: Colors.white70,
+                                          fontSize: 13,
+                                          fontWeight: FontWeight.w500,
+                                        ),
+                                      ),
+                                      Text(
+                                        _fsmState,
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontWeight: FontWeight.bold,
+                                          fontSize: 15,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 16),
+                                      Text(
+                                        'Session: ',
+                                        style: const TextStyle(
+                                          color: Colors.white70,
+                                          fontSize: 13,
+                                          fontWeight: FontWeight.w500,
+                                        ),
+                                      ),
+                                      Text(
+                                        _sessionActive ? 'Running' : 'Stopped',
+                                        style: TextStyle(
+                                          color:
+                                              _sessionActive
+                                                  ? Colors.greenAccent
+                                                  : Colors.orangeAccent,
+                                          fontWeight: FontWeight.bold,
+                                          fontSize: 14,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+
+                                  // Right side: session timer
+                                  Text(
+                                    _formattedDuration(_sessionElapsed),
+                                    style: TextStyle(
+                                      color:
+                                          _sessionActive
+                                              ? Colors.greenAccent
+                                              : Colors.white,
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+
+                            const SizedBox(height: 6),
+                            const Divider(color: Colors.white24, height: 12),
+
+                            // Posture + feedback + angles (right aligned vertically)
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                // Left side: posture + feedback
+                                Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      _postureStatus,
+                                      style: TextStyle(
+                                        color: hudColor,
+                                        fontWeight: FontWeight.w600,
+                                        fontSize: 13,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      _feedback,
+                                      style: TextStyle(
+                                        color:
+                                            _postureGood
+                                                ? Colors.greenAccent
+                                                : Colors.orangeAccent,
+                                        fontWeight: FontWeight.w600,
+                                        fontSize: 13,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+
+                                // Right side: angles (stacked vertically)
+                                Column(
+                                  crossAxisAlignment: CrossAxisAlignment.end,
+                                  children: [
+                                    if (_elbowAngle != null)
+                                      Text(
+                                        'Elbow: ${_elbowAngle!.toStringAsFixed(0)}°',
+                                        style: const TextStyle(
+                                          fontSize: 13,
+                                          color: Color(
+                                            0xFFB3E5FC,
+                                          ), // pastel blue
+                                          fontWeight: FontWeight.w500,
+                                        ),
+                                      ),
+                                    if (_torsoAngle != null)
+                                      Text(
+                                        'Torso: ${_torsoAngle!.toStringAsFixed(0)}°',
+                                        style: const TextStyle(
+                                          fontSize: 13,
+                                          color: Color(
+                                            0xFFC8E6C9,
+                                          ), // pastel green
+                                          fontWeight: FontWeight.w500,
+                                        ),
+                                      ),
+                                    if (_dx != null)
+                                      Text(
+                                        'dx: ${_dx!.toStringAsFixed(3)}',
+                                        style: const TextStyle(
+                                          fontSize: 13,
+                                          color: Color(
+                                            0xFFFFF9C4,
+                                          ), // pastel yellow
+                                          fontWeight: FontWeight.w500,
+                                        ),
+                                      ),
+                                  ],
                                 ),
                               ],
                             ),
 
                             const SizedBox(height: 8),
 
-                            // Instruction (matching Python)
+                            // Instruction if active
                             if (_instruction != 'neutral') ...[
-                              const SizedBox(height: 4),
                               Text(
                                 _instruction,
                                 style: const TextStyle(
@@ -754,7 +926,7 @@ class _BicepCurlState extends State<BicepCurl> {
                     ),
                   ),
 
-                  // New: compact translucent session control bar at the bottom
+                  // Bottom session controls (unchanged)
                   Positioned(
                     left: 16,
                     right: 16,
@@ -774,12 +946,8 @@ class _BicepCurlState extends State<BicepCurl> {
                             decoration: BoxDecoration(
                               color:
                                   _sessionActive
-                                      ? Colors.green.withValues(
-                                        alpha: 0.08,
-                                      ) // muted when active (disabled)
-                                      : Colors.green.withValues(
-                                        alpha: 0.18,
-                                      ), // subtle green when enabled
+                                      ? Colors.green.withValues(alpha: 0.08)
+                                      : Colors.green.withValues(alpha: 0.18),
                               borderRadius: BorderRadius.circular(8),
                             ),
                             child: Row(
@@ -821,12 +989,8 @@ class _BicepCurlState extends State<BicepCurl> {
                             decoration: BoxDecoration(
                               color:
                                   _sessionActive
-                                      ? Colors.red.withValues(
-                                        alpha: 0.18,
-                                      ) // visible red when active
-                                      : Colors.red.withValues(
-                                        alpha: 0.06,
-                                      ), // very subtle when disabled
+                                      ? Colors.red.withValues(alpha: 0.18)
+                                      : Colors.red.withValues(alpha: 0.06),
                               borderRadius: BorderRadius.circular(8),
                             ),
                             child: Row(

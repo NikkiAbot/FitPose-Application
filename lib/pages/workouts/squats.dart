@@ -1,10 +1,14 @@
 import 'dart:math' as math;
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
 import 'package:flutter/services.dart';
 import 'package:onnxruntime/onnxruntime.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 
 import '../../../components/camera_widget.dart';
 
@@ -45,6 +49,22 @@ class _SquatsState extends State<Squats> {
   String _state = 'waiting'; // waiting | down | up
   bool _anomaly = false;
 
+  // NEW: Sets/session tracking
+  int _setsCount = 0;
+  int _repsInCurrentSet = 0;
+  static const int repsPerSet = 12;
+
+  // Session timer fields
+  bool _sessionActive = false;
+  final Stopwatch _sessionStopwatch = Stopwatch();
+  Timer? _sessionTimer;
+  Duration _sessionElapsed = Duration.zero;
+
+  // Firebase user id (existing user document)
+  // Resolve the current Firebase Auth user dynamically.
+  // Requires: import 'package:firebase_auth/firebase_auth.dart';
+  String? get _userId => FirebaseAuth.instance.currentUser?.uid;
+
   // Thresholds
   static const double downThresh = 90;
   static const double upThresh = 160;
@@ -60,12 +80,24 @@ class _SquatsState extends State<Squats> {
       (_) => _showInstructionsDialog(),
     );
     _loadOnnxModel();
+    _initFirebase(); // initialize Firebase (non-blocking)
+  }
+
+  Future<void> _initFirebase() async {
+    try {
+      if (Firebase.apps.isEmpty) {
+        await Firebase.initializeApp();
+      }
+    } catch (e) {
+      if (kDebugMode) print('[Firebase] init error: $e');
+    }
   }
 
   @override
   void dispose() {
     _poseDetector.close();
     _onnxSession?.release();
+    _sessionTimer?.cancel(); // clean up timer
     super.dispose();
   }
 
@@ -239,7 +271,7 @@ class _SquatsState extends State<Squats> {
             ? 'Good posture'
             : (!upright ? 'Keep chest up' : 'Balance knees evenly');
 
-    // FSM for rep counting
+    // FSM for rep counting (updated to only count during session)
     if (_state == 'waiting') {
       if (_avgKnee! < downThresh) {
         _state = 'down';
@@ -253,7 +285,15 @@ class _SquatsState extends State<Squats> {
     } else if (_state == 'up') {
       if (_avgKnee! < downThresh) {
         if (!_anomaly && _postureGood) {
-          _reps += 1;
+          // Only increment when a session is active
+          if (_sessionActive) {
+            _reps += 1;
+            _repsInCurrentSet += 1;
+            if (_repsInCurrentSet >= repsPerSet) {
+              _setsCount += 1;
+              _repsInCurrentSet = 0;
+            }
+          }
           _feedback = 'Rep ✓';
         } else {
           _feedback = 'Fix form for clean rep';
@@ -357,6 +397,76 @@ class _SquatsState extends State<Squats> {
     );
   }
 
+  // ═══════════════════════════════════════════════════════════════
+  // SESSION CONTROL METHODS
+  // ═══════════════════════════════════════════════════════════════
+
+  void _startSession() {
+    if (_sessionActive) return;
+    setState(() {
+      _sessionActive = true;
+      _sessionStopwatch.reset();
+      _sessionStopwatch.start();
+      _sessionElapsed = _sessionStopwatch.elapsed;
+      _sessionTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (!mounted) return;
+        setState(() => _sessionElapsed = _sessionStopwatch.elapsed);
+      });
+      // reset counters for a new session
+      _reps = 0;
+      _setsCount = 0;
+      _repsInCurrentSet = 0;
+    });
+  }
+
+  void _endSession() {
+    if (!_sessionActive) return;
+    setState(() {
+      _sessionStopwatch.stop();
+      _sessionTimer?.cancel();
+      _sessionActive = false;
+      _sessionElapsed = _sessionStopwatch.elapsed;
+    });
+
+    // save metrics to Firestore (non-blocking)
+    _saveSessionMetrics();
+  }
+
+  Future<void> _saveSessionMetrics() async {
+    try {
+      final firestore = FirebaseFirestore.instance;
+      final doc = <String, dynamic>{
+        'userId': _userId,
+        'timestamp': FieldValue.serverTimestamp(),
+        'sessionDurationSeconds': _sessionElapsed.inSeconds,
+        'reps': _reps,
+        'sets': _setsCount,
+        'repsInCurrentSet': _repsInCurrentSet,
+      };
+      await firestore.collection('squat_sessions').add(doc);
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Session saved')));
+      }
+    } catch (e) {
+      if (kDebugMode) print('Error saving session metrics: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Failed to save session')));
+      }
+    }
+  }
+
+  String _formattedDuration(Duration d) {
+    final hours = d.inHours;
+    final minutes = d.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final seconds = d.inSeconds.remainder(60).toString().padLeft(2, '0');
+    if (hours > 0) return '$hours:$minutes:$seconds';
+    return '$minutes:$seconds';
+  }
+
   @override
   Widget build(BuildContext context) {
     final hudColor = _postureGood ? Colors.green : Colors.redAccent;
@@ -413,48 +523,235 @@ class _SquatsState extends State<Squats> {
                       ),
                       child: DefaultTextStyle(
                         style: const TextStyle(color: Colors.white),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.center,
                           children: [
-                            Text(
-                              'State: $_state   Reps: $_reps',
-                              style: const TextStyle(
-                                fontWeight: FontWeight.bold,
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(
+                                    'State: $_state',
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                  if (_avgKnee != null)
+                                    Text(
+                                      'Avg Knee: ${_avgKnee!.toStringAsFixed(0)}°',
+                                    ),
+                                  if (_leftKnee != null && _rightKnee != null)
+                                    Text(
+                                      'L/R Knee: ${_leftKnee!.toStringAsFixed(0)}° / ${_rightKnee!.toStringAsFixed(0)}°',
+                                    ),
+                                  if (_torsoAngle != null)
+                                    Text(
+                                      'Torso: ${_torsoAngle!.toStringAsFixed(0)}°',
+                                    ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    _postureStatus,
+                                    style: TextStyle(
+                                      color: hudColor,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    _feedback,
+                                    style: TextStyle(
+                                      color:
+                                          _postureGood
+                                              ? Colors.greenAccent
+                                              : Colors.orangeAccent,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ],
                               ),
                             ),
-                            if (_avgKnee != null)
-                              Text(
-                                'Avg Knee: ${_avgKnee!.toStringAsFixed(0)}°',
-                              ),
-                            if (_leftKnee != null && _rightKnee != null)
-                              Text(
-                                'L/R Knee: ${_leftKnee!.toStringAsFixed(0)}° / ${_rightKnee!.toStringAsFixed(0)}°',
-                              ),
-                            if (_torsoAngle != null)
-                              Text(
-                                'Torso: ${_torsoAngle!.toStringAsFixed(0)}°',
-                              ),
-                            Text(
-                              _postureStatus,
-                              style: TextStyle(
-                                color: hudColor,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                            const SizedBox(height: 4),
-                            Text(
-                              _feedback,
-                              style: TextStyle(
-                                color:
-                                    _postureGood
-                                        ? Colors.greenAccent
-                                        : Colors.orangeAccent,
-                                fontWeight: FontWeight.w600,
-                              ),
+
+                            // reps box with session status and duration beneath it
+                            Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Container(
+                                  width: 96,
+                                  padding: const EdgeInsets.symmetric(
+                                    vertical: 8,
+                                    horizontal: 8,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: Colors.black.withValues(alpha: 0.28),
+                                    borderRadius: BorderRadius.circular(8),
+                                    border: Border.all(
+                                      color: Colors.white24,
+                                      width: 1,
+                                    ),
+                                  ),
+                                  child: Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Text(
+                                        'REPS',
+                                        style: TextStyle(
+                                          color: Colors.white70,
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 6),
+                                      Text(
+                                        '$_reps',
+                                        style: TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 28,
+                                          fontWeight: FontWeight.bold,
+                                          shadows: [
+                                            Shadow(
+                                              color: Colors.black,
+                                              blurRadius: 6.0,
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                      const SizedBox(height: 6),
+                                      Text(
+                                        'Sets: $_setsCount  |  Total: $_reps',
+                                        textAlign: TextAlign.center,
+                                        style: TextStyle(
+                                          color: Colors.white70,
+                                          fontSize: 11,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                const SizedBox(height: 8),
+                                // Session status + duration below reps
+                                Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Text(
+                                      'Session: ${_sessionActive ? "Running" : "Stopped"}',
+                                      style: TextStyle(
+                                        color: Colors.white70,
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      _formattedDuration(_sessionElapsed),
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 14,
+                                        color: Colors.white,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ],
                             ),
                           ],
                         ),
                       ),
+                    ),
+                  ),
+
+                  // Session control bar (Start / End)
+                  Positioned(
+                    left: 16,
+                    right: 16,
+                    bottom: 22,
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        InkWell(
+                          onTap: _sessionActive ? null : _startSession,
+                          borderRadius: BorderRadius.circular(8),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 8,
+                            ),
+                            decoration: BoxDecoration(
+                              color:
+                                  _sessionActive
+                                      ? Colors.green.withAlpha(20)
+                                      : Colors.green.withAlpha(48),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Row(
+                              children: [
+                                Icon(
+                                  Icons.play_arrow,
+                                  color:
+                                      _sessionActive
+                                          ? Colors.white70
+                                          : Colors.white,
+                                  size: 18,
+                                ),
+                                const SizedBox(width: 6),
+                                Text(
+                                  'Start',
+                                  style: TextStyle(
+                                    color:
+                                        _sessionActive
+                                            ? Colors.white70
+                                            : Colors.white,
+                                    fontWeight: FontWeight.w600,
+                                    fontSize: 14,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        InkWell(
+                          onTap: _sessionActive ? _endSession : null,
+                          borderRadius: BorderRadius.circular(8),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 8,
+                            ),
+                            decoration: BoxDecoration(
+                              color:
+                                  _sessionActive
+                                      ? Colors.red.withAlpha(48)
+                                      : Colors.red.withAlpha(12),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Row(
+                              children: [
+                                Icon(
+                                  Icons.stop,
+                                  color:
+                                      _sessionActive
+                                          ? Colors.white
+                                          : Colors.white70,
+                                  size: 18,
+                                ),
+                                const SizedBox(width: 6),
+                                Text(
+                                  'End',
+                                  style: TextStyle(
+                                    color:
+                                        _sessionActive
+                                            ? Colors.white
+                                            : Colors.white70,
+                                    fontWeight: FontWeight.w600,
+                                    fontSize: 14,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ],

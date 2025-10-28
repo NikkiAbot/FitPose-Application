@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:math' as math;
-import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:camera/camera.dart';
@@ -8,6 +7,9 @@ import 'package:flutter/foundation.dart';
 import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
 import 'package:onnxruntime/onnxruntime.dart';
 import '../../../components/camera_widget.dart';
+
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 
 class PushUp extends StatefulWidget {
   const PushUp({super.key});
@@ -31,6 +33,8 @@ class _PushUpState extends State<PushUp> {
   bool _goodForm = false;
   String _feedback = 'Get into push-up position';
   int _pushUpCount = 0;
+  int _setCount = 0;
+  final int _repsPerSet = 10; // changeable target per set
   bool _downPosition = false;
 
   String _elbowAngleDisplay = '-';
@@ -42,6 +46,17 @@ class _PushUpState extends State<PushUp> {
 
   InputImageRotation _rotation = InputImageRotation.rotation0deg;
   OrtSession? _onnxSession;
+
+  // Session state + timer
+  bool _sessionActive = false;
+  Timer? _sessionTimer;
+  Duration _elapsed = Duration.zero;
+
+  String get _formattedDuration {
+    final m = _elapsed.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final s = _elapsed.inSeconds.remainder(60).toString().padLeft(2, '0');
+    return '$m:$s';
+  }
 
   @override
   void initState() {
@@ -63,6 +78,7 @@ class _PushUpState extends State<PushUp> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
     });
+    _sessionTimer?.cancel();
     super.dispose();
   }
 
@@ -225,24 +241,37 @@ class _PushUpState extends State<PushUp> {
     final torsoAligned = torsoAngle > 150;
 
     // Thresholds
-    const double verticalThresholdDown =
-        0.04; // amount of downward motion to trigger "down"
+    const double verticalThresholdDown = 0.04;
     const double verticalThresholdUp = 0.02;
 
     if (_movementDelta > verticalThresholdDown &&
         elbowAngle < 80 &&
         torsoAligned) {
-      _downPosition = true;
-      _feedback = 'Going down...';
+      if (_sessionActive) {
+        _downPosition = true;
+      }
+      _feedback =
+          _sessionActive ? 'Going down...' : 'Good form detected - press Start';
       _goodForm = true;
     } else if (_movementDelta > verticalThresholdUp &&
         elbowAngle > 150 &&
         _downPosition &&
         torsoAligned) {
-      _pushUpCount++;
-      _downPosition = false;
-      _feedback = 'Push-up complete ✅';
-      _goodForm = true;
+      if (_sessionActive) {
+        _pushUpCount++;
+        _downPosition = false;
+        if (_pushUpCount >= _repsPerSet) {
+          _setCount++;
+          _pushUpCount = 0;
+          _feedback = 'Set complete ✅ Total sets: $_setCount';
+        } else {
+          _feedback = 'Push-up complete ✅';
+        }
+        _goodForm = true;
+      } else {
+        _feedback = 'Good form - press Start to begin';
+        _goodForm = true;
+      }
     } else {
       _feedback = torsoAligned ? 'Lower your body' : 'Keep your body straight';
       _goodForm = false;
@@ -351,6 +380,76 @@ class _PushUpState extends State<PushUp> {
     );
   }
 
+  void _startSession() {
+    if (_sessionActive) return;
+    setState(() {
+      _sessionActive = true;
+      _elapsed = Duration.zero;
+      _pushUpCount = 0;
+      _setCount = 0;
+      _downPosition = false;
+      _previousHipY = 0.0;
+      _feedback = 'Session started. Maintain form.';
+    });
+    _sessionTimer?.cancel();
+    _sessionTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted) return;
+      setState(() {
+        _elapsed += const Duration(seconds: 1);
+      });
+    });
+  }
+
+  Future<void> _endSession() async {
+    if (!_sessionActive) return;
+    _sessionTimer?.cancel();
+    _sessionTimer = null;
+
+    setState(() {
+      _sessionActive = false;
+      _feedback = 'Session ended';
+      _downPosition = false;
+    });
+
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      final userId = user?.uid ?? 'anonymous';
+      final totalReps = _setCount * _repsPerSet + _pushUpCount;
+      final durationSeconds = _elapsed.inSeconds;
+
+      await FirebaseFirestore.instance.collection('pushup_sessions').add({
+        'reps': _pushUpCount,
+        'sets': _setCount,
+        'total': totalReps,
+        'duration': durationSeconds,
+        'timestamp': FieldValue.serverTimestamp(),
+        'userId': userId,
+      });
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Session Saved'),
+            backgroundColor: Color.fromARGB(255, 98, 98, 98),
+            behavior: SnackBarBehavior.floating,
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error saving session: $e'),
+            backgroundColor: Colors.redAccent,
+            behavior: SnackBarBehavior.floating,
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final hudColor = _goodForm ? Colors.green : Colors.redAccent;
@@ -361,7 +460,7 @@ class _PushUpState extends State<PushUp> {
         backgroundColor: Colors.transparent,
         elevation: 0,
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back, color: Colors.grey, size: 28),
+          icon: const Icon(Icons.arrow_back, color: Colors.grey, size: 26),
           onPressed: () => Navigator.of(context).pop(),
         ),
       ),
@@ -373,6 +472,7 @@ class _PushUpState extends State<PushUp> {
                     showCamera: _showCamera,
                     onImage: _onCameraImage,
                   ),
+
                   if (_latestPose != null &&
                       _imageWidth != null &&
                       _imageHeight != null)
@@ -387,45 +487,146 @@ class _PushUpState extends State<PushUp> {
                         ),
                       ),
                     ),
+
+                  // 🟢 Start / 🔴 End Controls — compact & bottom-centered
+                  Positioned(
+                    bottom: 125, // placed slightly above the HUD
+                    left: 0,
+                    right: 0,
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        ElevatedButton(
+                          onPressed: _sessionActive ? null : _startSession,
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.green.withOpacity(0.25),
+                            foregroundColor: Colors.greenAccent,
+                            elevation: 0,
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 14,
+                              vertical: 6,
+                            ),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                          ),
+                          child: const Text(
+                            'Start',
+                            style: TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        ElevatedButton(
+                          onPressed: _sessionActive ? _endSession : null,
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.red.withOpacity(0.25),
+                            foregroundColor: Colors.redAccent,
+                            elevation: 0,
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 14,
+                              vertical: 6,
+                            ),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                          ),
+                          child: const Text(
+                            'End',
+                            style: TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+
+                  // HUD — compact layout with smaller font and tighter padding
                   Positioned(
                     bottom: 16,
-                    left: 16,
-                    right: 16,
+                    left: 12,
+                    right: 12,
                     child: Container(
-                      padding: const EdgeInsets.all(12),
+                      padding: const EdgeInsets.all(8),
                       decoration: BoxDecoration(
                         color: Colors.black54,
-                        border: Border.all(color: hudColor, width: 2),
-                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: hudColor, width: 1.5),
+                        borderRadius: BorderRadius.circular(10),
                       ),
                       child: DefaultTextStyle(
-                        style: const TextStyle(color: Colors.white),
-                        child: Column(
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 13,
+                        ),
+                        child: Row(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(
-                              'Push-Ups: $_pushUpCount',
-                              style: const TextStyle(
-                                fontSize: 18,
-                                fontWeight: FontWeight.bold,
+                            // 🔹 LEFT SIDE — angles, duration, feedback
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    'Duration: $_formattedDuration',
+                                    style: const TextStyle(
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.w600,
+                                      color: Colors.white70,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text('Right Elbow: $_elbowAngleDisplay°'),
+                                  Text('Torso: $_torsoAngleDisplay°'),
+                                  Text('Vertical: $_verticalMovementDisplay'),
+                                  const SizedBox(height: 3),
+                                  Text(
+                                    _feedback,
+                                    style: TextStyle(
+                                      color:
+                                          _goodForm
+                                              ? Colors.greenAccent
+                                              : Colors.orangeAccent,
+                                      fontWeight: FontWeight.w600,
+                                      fontSize: 13,
+                                    ),
+                                  ),
+                                ],
                               ),
                             ),
-                            const SizedBox(height: 4),
-                            Text('Right Elbow Angle: $_elbowAngleDisplay°'),
-                            Text('Torso Angle: $_torsoAngleDisplay°'),
-                            Text(
-                              'Vertical Movement: $_verticalMovementDisplay',
-                            ),
-                            const SizedBox(height: 4),
-                            Text(
-                              _feedback,
-                              style: TextStyle(
-                                color:
-                                    _goodForm
-                                        ? Colors.greenAccent
-                                        : Colors.orangeAccent,
-                                fontWeight: FontWeight.w600,
-                              ),
+
+                            // 🔹 RIGHT SIDE — Reps and Sets
+                            Column(
+                              crossAxisAlignment: CrossAxisAlignment.center,
+                              children: [
+                                const Text(
+                                  'Reps',
+                                  style: TextStyle(
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.white70,
+                                  ),
+                                ),
+                                Text(
+                                  '$_pushUpCount',
+                                  style: const TextStyle(
+                                    fontSize: 26,
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  'Sets: $_setCount | Total: ${_setCount * _repsPerSet + _pushUpCount}',
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.white70,
+                                  ),
+                                ),
+                              ],
                             ),
                           ],
                         ),

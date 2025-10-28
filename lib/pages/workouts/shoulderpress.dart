@@ -5,6 +5,10 @@ import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
+import 'dart:async';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 
 import '../../../components/camera_widget.dart';
 
@@ -56,6 +60,17 @@ class _ShoulderPressState extends State<ShoulderPress> {
   String _state = 'waiting'; // waiting | lowered | raised
   bool _anomaly = false;
 
+  // NEW: Sets/session tracking
+  int _setsCount = 0;
+  int _repsInCurrentSet = 0;
+  static const int repsPerSet = 12;
+
+  // Session timer fields
+  bool _sessionActive = false;
+  final Stopwatch _sessionStopwatch = Stopwatch();
+  Timer? _sessionTimer;
+  Duration _sessionElapsed = Duration.zero;
+
   // Rule-based elbows flaring detection
   double? _leftElbowFlare;
   double? _rightElbowFlare;
@@ -77,6 +92,9 @@ class _ShoulderPressState extends State<ShoulderPress> {
 
   // Use portrait 270 like your working BicepCurl page
   InputImageRotation _rotation = InputImageRotation.rotation270deg;
+
+  // Firebase user getter
+  String? get _userId => FirebaseAuth.instance.currentUser?.uid;
 
   @override
   void initState() {
@@ -107,12 +125,25 @@ class _ShoulderPressState extends State<ShoulderPress> {
     WidgetsBinding.instance.addPostFrameCallback(
       (_) => _showInstructionsDialog(),
     );
+
+    _initFirebase(); // initialize Firebase (non-blocking)
+  }
+
+  Future<void> _initFirebase() async {
+    try {
+      if (Firebase.apps.isEmpty) {
+        await Firebase.initializeApp();
+      }
+    } catch (e) {
+      if (kDebugMode) print('[Firebase] init error: $e');
+    }
   }
 
   @override
   void dispose() {
     _poseDetector.close();
     _classifier.dispose();
+    _sessionTimer?.cancel(); // clean up timer
     super.dispose();
   }
 
@@ -566,7 +597,6 @@ class _ShoulderPressState extends State<ShoulderPress> {
         // *** Only mark anomaly if "Elbows Flaring Out" is detected with 65%+ confidence ***
         if (!_postureGood) {
           if (_classifierReady && !_mlGoodForm && _mlConfidence >= 0.65) {
-            // ML confidently detected Elbows Flaring Out
             _anomaly = true;
             if (kDebugMode) {
               print(
@@ -574,7 +604,6 @@ class _ShoulderPressState extends State<ShoulderPress> {
               );
             }
           } else if (!_classifierReady && !ruleBasedGood) {
-            // No ML - use rule-based detection
             _anomaly = true;
             if (kDebugMode) print('[Anomaly] ✗ Marked by rules');
           }
@@ -583,7 +612,15 @@ class _ShoulderPressState extends State<ShoulderPress> {
     } else if (_state == 'raised') {
       if (_avgElbow! < loweredThresh) {
         if (!_anomaly && _postureGood) {
-          _reps += 1;
+          // Only increment when a session is active
+          if (_sessionActive) {
+            _reps += 1;
+            _repsInCurrentSet += 1;
+            if (_repsInCurrentSet >= repsPerSet) {
+              _setsCount += 1;
+              _repsInCurrentSet = 0;
+            }
+          }
           _feedback = 'Rep ✓';
         } else {
           _feedback =
@@ -604,6 +641,76 @@ class _ShoulderPressState extends State<ShoulderPress> {
     } else if (_feedback != 'Rep ✓' && !_feedback.startsWith('Fix form')) {
       _feedback = _postureGood ? 'Keep going' : _postureStatus;
     }
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // SESSION CONTROL METHODS
+  // ═══════════════════════════════════════════════════════════════
+
+  void _startSession() {
+    if (_sessionActive) return;
+    setState(() {
+      _sessionActive = true;
+      _sessionStopwatch.reset();
+      _sessionStopwatch.start();
+      _sessionElapsed = _sessionStopwatch.elapsed;
+      _sessionTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (!mounted) return;
+        setState(() => _sessionElapsed = _sessionStopwatch.elapsed);
+      });
+      // reset counters for a new session
+      _reps = 0;
+      _setsCount = 0;
+      _repsInCurrentSet = 0;
+    });
+  }
+
+  void _endSession() {
+    if (!_sessionActive) return;
+    setState(() {
+      _sessionStopwatch.stop();
+      _sessionTimer?.cancel();
+      _sessionActive = false;
+      _sessionElapsed = _sessionStopwatch.elapsed;
+    });
+
+    // save metrics to Firestore (non-blocking)
+    _saveSessionMetrics();
+  }
+
+  Future<void> _saveSessionMetrics() async {
+    try {
+      final firestore = FirebaseFirestore.instance;
+      final doc = <String, dynamic>{
+        'userId': _userId,
+        'timestamp': FieldValue.serverTimestamp(),
+        'sessionDurationSeconds': _sessionElapsed.inSeconds,
+        'reps': _reps,
+        'sets': _setsCount,
+        'repsInCurrentSet': _repsInCurrentSet,
+      };
+      await firestore.collection('shoulderpress_sessions').add(doc);
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Session saved')));
+      }
+    } catch (e) {
+      if (kDebugMode) print('Error saving session metrics: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Failed to save session')));
+      }
+    }
+  }
+
+  String _formattedDuration(Duration d) {
+    final hours = d.inHours;
+    final minutes = d.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final seconds = d.inSeconds.remainder(60).toString().padLeft(2, '0');
+    if (hours > 0) return '$hours:$minutes:$seconds';
+    return '$minutes:$seconds';
   }
 
   void _showInstructionsDialog() {
@@ -667,13 +774,13 @@ class _ShoulderPressState extends State<ShoulderPress> {
           _showCamera
               ? Stack(
                 children: [
-                  // Camera view
+                  // --- Camera view ---
                   CameraWidget(
                     showCamera: _showCamera,
                     onImage: _onCameraImage,
                   ),
 
-                  // Pose overlay painter
+                  // --- Pose overlay painter ---
                   if (_latestPose != null &&
                       _imageWidth != null &&
                       _imageHeight != null)
@@ -694,71 +801,139 @@ class _ShoulderPressState extends State<ShoulderPress> {
                       ),
                     ),
 
-                  // HUD with metrics and ML predictions
+                  // --- Compact HUD ---
                   Positioned(
-                    top: 16,
-                    left: 16,
-                    right: 16,
+                    top: 12,
+                    left: 12,
+                    right: 12,
                     child: Container(
-                      padding: const EdgeInsets.all(12),
+                      padding: const EdgeInsets.all(8),
                       decoration: BoxDecoration(
-                        color: Colors.black54,
-                        border: Border.all(color: hudColor, width: 2),
-                        borderRadius: BorderRadius.circular(12),
+                        color: Colors.black.withValues(alpha: 0.45),
+                        border: Border.all(
+                          color: hudColor.withValues(alpha: 0.8),
+                          width: 1.2,
+                        ),
+                        borderRadius: BorderRadius.circular(10),
                       ),
                       child: DefaultTextStyle(
                         style: const TextStyle(color: Colors.white),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
                           children: [
+                            // === TOP ROW: ML Form + Reps Box ===
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                // --- ML Form ---
+                                if (_classifierReady)
+                                  Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      const Text(
+                                        'ML Form',
+                                        style: TextStyle(
+                                          color: Colors.white70,
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 2),
+                                      Text(
+                                        _mlLabel,
+                                        style: TextStyle(
+                                          color:
+                                              _mlGoodForm
+                                                  ? Colors.greenAccent
+                                                  : Colors.orangeAccent,
+                                          fontWeight: FontWeight.bold,
+                                          fontSize: 15,
+                                        ),
+                                      ),
+                                      if (_mlConfidence > 0)
+                                        Text(
+                                          'Confidence: ${(_mlConfidence * 100).toStringAsFixed(1)}%',
+                                          style: const TextStyle(
+                                            color: Colors.white70,
+                                            fontSize: 9,
+                                            fontWeight: FontWeight.w400,
+                                          ),
+                                        ),
+                                    ],
+                                  ),
+
+                                // --- Reps / Sets / Total box ---
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 10,
+                                    vertical: 6,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: Colors.black.withValues(alpha: 0.6),
+                                    borderRadius: BorderRadius.circular(8),
+                                    border: Border.all(
+                                      color: Colors.white24,
+                                      width: 1,
+                                    ),
+                                  ),
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.center,
+                                    children: [
+                                      const Text(
+                                        'Reps',
+                                        style: TextStyle(
+                                          color: Colors.white70,
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w500,
+                                        ),
+                                      ),
+                                      Text(
+                                        '$_reps',
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 18,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                      Text(
+                                        'Sets: $_setsCount | Total: ${_setsCount * (_reps > 0 ? _reps : 0)}',
+                                        style: const TextStyle(
+                                          color: Colors.white70,
+                                          fontSize: 9,
+                                          fontWeight: FontWeight.w400,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+
+                            const SizedBox(height: 6),
+                            const Divider(color: Colors.white24, height: 1),
+                            const SizedBox(height: 6),
+
+                            // === Posture Feedback ===
                             Text(
-                              'State: $_state   Reps: $_reps',
+                              'Posture Status',
                               style: const TextStyle(
-                                fontWeight: FontWeight.bold,
+                                color: Colors.white70,
+                                fontSize: 10,
+                                fontWeight: FontWeight.w600,
                               ),
                             ),
-                            if (_avgElbow != null)
-                              Text(
-                                'Avg Elbow: ${_avgElbow!.toStringAsFixed(0)}°',
-                              ),
-                            if (_leftElbow != null && _rightElbow != null)
-                              Text(
-                                'L/R Elbow: ${_leftElbow!.toStringAsFixed(0)}° / ${_rightElbow!.toStringAsFixed(0)}°',
-                              ),
-                            if (_trunkAngle != null)
-                              Text(
-                                'Trunk: ${_trunkAngle!.toStringAsFixed(0)}°',
-                              ),
-
-                            // ML prediction display
-                            if (_classifierReady) ...[
-                              const Divider(color: Colors.white24, height: 12),
-                              Text(
-                                'ML Form: $_mlLabel',
-                                style: TextStyle(
-                                  color:
-                                      _mlGoodForm
-                                          ? Colors.greenAccent
-                                          : Colors.orangeAccent,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                              if (_mlConfidence > 0)
-                                Text(
-                                  'Confidence: ${(_mlConfidence * 100).toStringAsFixed(1)}%',
-                                  style: const TextStyle(fontSize: 12),
-                                ),
-                            ],
-
-                            const Divider(color: Colors.white24, height: 12),
                             Text(
                               _postureStatus,
                               style: TextStyle(
                                 color: hudColor,
                                 fontWeight: FontWeight.w600,
+                                fontSize: 12,
                               ),
                             ),
-                            const SizedBox(height: 4),
                             Text(
                               _feedback,
                               style: TextStyle(
@@ -766,12 +941,187 @@ class _ShoulderPressState extends State<ShoulderPress> {
                                     _postureGood
                                         ? Colors.greenAccent
                                         : Colors.orangeAccent,
-                                fontWeight: FontWeight.w600,
+                                fontWeight: FontWeight.w500,
+                                fontSize: 11,
                               ),
+                            ),
+
+                            const SizedBox(height: 6),
+                            const Divider(color: Colors.white24, height: 1),
+                            const SizedBox(height: 6),
+
+                            // === Angles ===
+                            Wrap(
+                              spacing: 6,
+                              runSpacing: 2,
+                              children: [
+                                if (_avgElbow != null)
+                                  Text(
+                                    'Avg Elbow: ${_avgElbow!.toStringAsFixed(0)}°',
+                                    style: const TextStyle(
+                                      fontSize: 10,
+                                      color: Colors.white70,
+                                    ),
+                                  ),
+                                if (_leftElbow != null && _rightElbow != null)
+                                  Text(
+                                    'L/R: ${_leftElbow!.toStringAsFixed(0)}° / ${_rightElbow!.toStringAsFixed(0)}°',
+                                    style: const TextStyle(
+                                      fontSize: 10,
+                                      color: Colors.white70,
+                                    ),
+                                  ),
+                                if (_trunkAngle != null)
+                                  Text(
+                                    'Trunk: ${_trunkAngle!.toStringAsFixed(0)}°',
+                                    style: const TextStyle(
+                                      fontSize: 10,
+                                      color: Colors.white70,
+                                    ),
+                                  ),
+                              ],
+                            ),
+
+                            const SizedBox(height: 6),
+                            const Divider(color: Colors.white24, height: 1),
+                            const SizedBox(height: 6),
+
+                            // === Session Info ===
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Row(
+                                  children: [
+                                    const Text(
+                                      'Session:',
+                                      style: TextStyle(
+                                        color: Colors.white70,
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.w500,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 3),
+                                    Text(
+                                      _sessionActive ? 'Running' : 'Stopped',
+                                      style: TextStyle(
+                                        color:
+                                            _sessionActive
+                                                ? Colors.greenAccent
+                                                : Colors.redAccent,
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                Text(
+                                  _formattedDuration(_sessionElapsed),
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ],
                             ),
                           ],
                         ),
                       ),
+                    ),
+                  ),
+
+                  // === Start / End buttons (unchanged) ===
+                  Positioned(
+                    left: 16,
+                    right: 16,
+                    bottom: 20,
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        InkWell(
+                          onTap: _sessionActive ? null : _startSession,
+                          borderRadius: BorderRadius.circular(8),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 6,
+                            ),
+                            decoration: BoxDecoration(
+                              color:
+                                  _sessionActive
+                                      ? Colors.green.withAlpha(20)
+                                      : Colors.green.withAlpha(60),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Row(
+                              children: [
+                                Icon(
+                                  Icons.play_arrow,
+                                  color:
+                                      _sessionActive
+                                          ? Colors.white70
+                                          : Colors.white,
+                                  size: 16,
+                                ),
+                                const SizedBox(width: 4),
+                                Text(
+                                  'Start',
+                                  style: TextStyle(
+                                    color:
+                                        _sessionActive
+                                            ? Colors.white70
+                                            : Colors.white,
+                                    fontWeight: FontWeight.w600,
+                                    fontSize: 13,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        InkWell(
+                          onTap: _sessionActive ? _endSession : null,
+                          borderRadius: BorderRadius.circular(8),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 6,
+                            ),
+                            decoration: BoxDecoration(
+                              color:
+                                  _sessionActive
+                                      ? Colors.red.withAlpha(60)
+                                      : Colors.red.withAlpha(20),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Row(
+                              children: [
+                                Icon(
+                                  Icons.stop,
+                                  color:
+                                      _sessionActive
+                                          ? Colors.white
+                                          : Colors.white70,
+                                  size: 16,
+                                ),
+                                const SizedBox(width: 4),
+                                Text(
+                                  'End',
+                                  style: TextStyle(
+                                    color:
+                                        _sessionActive
+                                            ? Colors.white
+                                            : Colors.white70,
+                                    fontWeight: FontWeight.w600,
+                                    fontSize: 13,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ],

@@ -1,7 +1,12 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
+
+// NEW: Firebase imports
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 
 import '../../components/camera_widget.dart';
 import '../../models/lunges_feature_extract.dart';
@@ -56,6 +61,20 @@ class _LungesState extends State<Lunges> {
   // ═══════════════════════════════════════════════════════════════
   String _currentStage = ''; // 'init', 'mid', 'down'
   int _counter = 0;
+
+  // Reps/sets tracking
+  static const int _repsPerSet = 12;
+  int get _setsCompleted => _counter ~/ _repsPerSet;
+  int get _repsInCurrentSet => _counter % _repsPerSet;
+
+  // New: store counter at session start so we can compute session-only reps
+  int? _counterAtSessionStart;
+
+  // New: session timing state
+  Timer? _sessionTimer;
+  DateTime? _sessionStart;
+  Duration _sessionElapsed = Duration.zero;
+  bool _sessionActive = false;
 
   // Thresholds (matching Python)
   static const double predictionProbabilityThreshold = 0.8;
@@ -135,7 +154,82 @@ class _LungesState extends State<Lunges> {
     _poseDetector.close();
     _stageClassifier.dispose();
     _errorClassifier.dispose();
+    _sessionTimer?.cancel(); // ensure timer is cancelled
     super.dispose();
+  }
+
+  // Start the duration timer
+  void _startSession() {
+    if (_sessionActive) return;
+    _sessionStart = DateTime.now();
+    _sessionElapsed = Duration.zero;
+    _counterAtSessionStart = _counter; // capture starting counter
+    _sessionTimer?.cancel();
+    _sessionTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted) return;
+      setState(() {
+        _sessionElapsed = DateTime.now().difference(_sessionStart!);
+      });
+    });
+    setState(() {
+      _sessionActive = true;
+    });
+  }
+
+  // End the duration timer and save session to Firestore
+  Future<void> _endSession() async {
+    if (!_sessionActive) return;
+    _sessionTimer?.cancel();
+    _sessionTimer = null;
+    _sessionElapsed = DateTime.now().difference(_sessionStart!);
+    setState(() {
+      _sessionActive = false;
+    });
+
+    // Save session to Firestore (only after start and end)
+    await _saveSessionToFirestore();
+  }
+
+  // New: persist session document to 'lunges_sessions'
+  Future<void> _saveSessionToFirestore() async {
+    try {
+      final start = _sessionStart ?? DateTime.now();
+      start.add(_sessionElapsed);
+      final sessionReps = _counter - (_counterAtSessionStart ?? 0);
+      final sessionSets = sessionReps ~/ 12;
+      final durationSeconds = _sessionElapsed.inSeconds;
+      final userId = FirebaseAuth.instance.currentUser?.uid ?? 'anonymous';
+
+      final data = <String, dynamic>{
+        'userId': userId,
+        'reps': sessionReps,
+        'sets': sessionSets,
+        'duration_seconds': durationSeconds,
+        'duration_formatted': _formatDuration(_sessionElapsed),
+        'created_at': FieldValue.serverTimestamp(),
+      };
+
+      await FirebaseFirestore.instance.collection('lunges_sessions').add(data);
+
+      if (kDebugMode) {
+        print('[Lunges] ✅ Session saved: $data');
+      }
+    } catch (e, st) {
+      if (kDebugMode) {
+        print('[Lunges] ❌ Failed to save session: $e');
+        print(st);
+      }
+    } finally {
+      // clear counterAtSessionStart so next session is fresh
+      _counterAtSessionStart = null;
+    }
+  }
+
+  // Simple mm:ss formatter
+  String _formatDuration(Duration d) {
+    final minutes = d.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final seconds = d.inSeconds.remainder(60).toString().padLeft(2, '0');
+    return '$minutes:$seconds';
   }
 
   void _onCameraImage(
@@ -307,6 +401,10 @@ class _LungesState extends State<Lunges> {
   @override
   Widget build(BuildContext context) {
     debugPrint('🏗️ [Lunges] build() method called');
+
+    // Determine HUD color based on form quality
+    final hudColor = _errorClass == 'K' ? Colors.redAccent : Colors.green;
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Lunges'),
@@ -343,11 +441,12 @@ class _LungesState extends State<Lunges> {
                           currentStage: _currentStage,
                           rotation: _rotation,
                           mirror: true,
+                          errorClass: _errorClass,
                         ),
                       ),
                     ),
 
-                  // HUD overlay (matching Python's status box)
+                  // HUD with metrics (matching bicep curl style)
                   Positioned(
                     top: 16,
                     left: 16,
@@ -355,190 +454,338 @@ class _LungesState extends State<Lunges> {
                     child: Container(
                       padding: const EdgeInsets.all(12),
                       decoration: BoxDecoration(
-                        color: const Color(
-                          0xFFF57510,
-                        ).withValues(alpha: 0.9), // (245, 117, 16)
-                        border: Border.all(color: Colors.white70, width: 2),
-                        borderRadius: BorderRadius.circular(8),
+                        color: Colors.black54,
+                        border: Border.all(color: hudColor, width: 2),
+                        borderRadius: BorderRadius.circular(12),
                       ),
                       child: DefaultTextStyle(
-                        style: const TextStyle(
-                          color: Colors.black,
-                          fontSize: 13,
-                        ),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceAround,
+                        style: const TextStyle(color: Colors.white),
+                        child: Column(
                           children: [
-                            // STAGE column
-                            Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              mainAxisSize: MainAxisSize.min,
+                            // Status row
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
                               children: [
-                                const Text(
-                                  'STAGE',
-                                  style: TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 11,
+                                // Stage status
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      const Text(
+                                        'STAGE',
+                                        style: TextStyle(
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w600,
+                                          color: Colors.white70,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        _currentStage.isNotEmpty
+                                            ? _currentStage.toUpperCase()
+                                            : 'INIT',
+                                        style: const TextStyle(
+                                          fontSize: 18,
+                                          fontWeight: FontWeight.bold,
+                                          color: Colors.white,
+                                        ),
+                                      ),
+                                      Text(
+                                        'Confidence: ${_stageProbability != null ? (_stageProbability! * 100).toStringAsFixed(0) : "0"}%',
+                                        style: const TextStyle(
+                                          fontSize: 10,
+                                          color: Colors.white60,
+                                        ),
+                                      ),
+                                    ],
                                   ),
                                 ),
-                                Text(
-                                  _stageProbability != null
-                                      ? _stageProbability!.toStringAsFixed(2)
-                                      : '0.00',
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 12,
+
+                                // Reps & Sets container (UPDATED)
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 16,
+                                    vertical: 8,
                                   ),
-                                ),
-                                Text(
-                                  _currentStage.isNotEmpty
-                                      ? _currentStage
-                                      : 'init',
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 12,
+                                  decoration: BoxDecoration(
+                                    color: Colors.white.withValues(alpha: 0.1),
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: Column(
+                                    children: [
+                                      const Text(
+                                        'REPS',
+                                        style: TextStyle(
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w600,
+                                          color: Colors.white70,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 4),
+                                      // Show reps in current set as primary number, and total in smaller text
+                                      Text(
+                                        '${_repsInCurrentSet == 0 && _counter > 0 ? 12 : _repsInCurrentSet}',
+                                        // If current-in-set is 0 but total > 0, show 12 to indicate a completed set
+                                        style: const TextStyle(
+                                          fontSize: 28,
+                                          fontWeight: FontWeight.bold,
+                                          color: Colors.white,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        'Sets: $_setsCompleted  •  Total: $_counter',
+                                        style: const TextStyle(
+                                          fontSize: 10,
+                                          color: Colors.white60,
+                                        ),
+                                      ),
+                                    ],
                                   ),
                                 ),
                               ],
                             ),
 
-                            // COUNTER column
-                            Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              mainAxisSize: MainAxisSize.min,
+                            // NEW: Session duration row (buttons moved to bottom center)
+                            const SizedBox(height: 8),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.start,
                               children: [
-                                const Text(
-                                  'COUNTER',
-                                  style: TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 11,
-                                  ),
-                                ),
-                                Text(
-                                  '$_counter',
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 12,
-                                  ),
+                                // Duration display only
+                                Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const Text(
+                                      'DURATION',
+                                      style: TextStyle(
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w600,
+                                        color: Colors.white70,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      _formatDuration(_sessionElapsed),
+                                      style: const TextStyle(
+                                        fontSize: 14,
+                                        fontWeight: FontWeight.bold,
+                                        color: Colors.white,
+                                      ),
+                                    ),
+                                  ],
                                 ),
                               ],
                             ),
 
-                            // K_O_T (Knee-Over-Toe) column
-                            Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              mainAxisSize: MainAxisSize.min,
+                            const SizedBox(height: 12),
+                            const Divider(color: Colors.white24, height: 1),
+                            const SizedBox(height: 12),
+
+                            // Form analysis row
+                            Row(
                               children: [
-                                const Text(
-                                  'K_O_T',
-                                  style: TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 11,
+                                // Knee-Over-Toe status
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      const Text(
+                                        'KNEE-OVER-TOE',
+                                        style: TextStyle(
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w600,
+                                          color: Colors.white70,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 4),
+                                      Row(
+                                        children: [
+                                          Icon(
+                                            _errorClass == 'K'
+                                                ? Icons.warning_rounded
+                                                : Icons.check_circle_rounded,
+                                            color:
+                                                _errorClass == 'K'
+                                                    ? Colors.red
+                                                    : Colors.green,
+                                            size: 16,
+                                          ),
+                                          const SizedBox(width: 6),
+                                          Text(
+                                            _errorClass == 'K'
+                                                ? 'Detected'
+                                                : 'Good Form',
+                                            style: TextStyle(
+                                              fontSize: 13,
+                                              fontWeight: FontWeight.bold,
+                                              color:
+                                                  _errorClass == 'K'
+                                                      ? Colors.red
+                                                      : Colors.green,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      if (_errorProbability != null)
+                                        Text(
+                                          'Confidence: ${(_errorProbability! * 100).toStringAsFixed(0)}%',
+                                          style: const TextStyle(
+                                            fontSize: 10,
+                                            color: Colors.white60,
+                                          ),
+                                        ),
+                                    ],
                                   ),
                                 ),
-                                Text(
-                                  _errorProbability != null
-                                      ? _errorProbability!.toStringAsFixed(2)
-                                      : '--',
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 12,
+
+                                // Knee angles
+                                if (_kneeAnalysis != null)
+                                  Container(
+                                    padding: const EdgeInsets.all(8),
+                                    decoration: BoxDecoration(
+                                      color: Colors.white.withValues(
+                                        alpha: 0.1,
+                                      ),
+                                      borderRadius: BorderRadius.circular(6),
+                                    ),
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Row(
+                                          children: [
+                                            const Text(
+                                              'R: ',
+                                              style: TextStyle(
+                                                fontSize: 11,
+                                                color: Colors.white70,
+                                              ),
+                                            ),
+                                            Text(
+                                              '${(_kneeAnalysis!['right']['angle'] as double).toStringAsFixed(0)}°',
+                                              style: TextStyle(
+                                                fontSize: 12,
+                                                fontWeight: FontWeight.bold,
+                                                color:
+                                                    _kneeAnalysis!['right']['error']
+                                                        ? Colors.red
+                                                        : Colors.green,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                        const SizedBox(height: 2),
+                                        Row(
+                                          children: [
+                                            const Text(
+                                              'L: ',
+                                              style: TextStyle(
+                                                fontSize: 11,
+                                                color: Colors.white70,
+                                              ),
+                                            ),
+                                            Text(
+                                              '${(_kneeAnalysis!['left']['angle'] as double).toStringAsFixed(0)}°',
+                                              style: TextStyle(
+                                                fontSize: 12,
+                                                fontWeight: FontWeight.bold,
+                                                color:
+                                                    _kneeAnalysis!['left']['error']
+                                                        ? Colors.red
+                                                        : Colors.green,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ],
+                                    ),
                                   ),
-                                ),
-                                Text(
-                                  _errorClass ?? '--',
-                                  style: TextStyle(
-                                    color:
-                                        _errorClass == 'K'
-                                            ? Colors.red
-                                            : Colors.white,
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 12,
-                                  ),
-                                ),
                               ],
                             ),
                           ],
                         ),
                       ),
                     ),
-                  ),
-
-                  // Initialization status indicator
+                  ), // end of main HUD Positioned
+                  // Bottom-center Start / End buttons (transparent / faint colors)
                   Positioned(
-                    top: 90,
-                    left: 16,
-                    right: 16,
-                    child: Container(
-                      padding: const EdgeInsets.all(8),
-                      decoration: BoxDecoration(
-                        color:
-                            _classifiersReady
-                                ? Colors.green.withValues(alpha: 0.8)
-                                : Colors.red.withValues(alpha: 0.8),
-                        borderRadius: BorderRadius.circular(4),
-                      ),
-                      child: Text(
-                        'Init: ${_initializationAttempted ? "YES" : "NO"} | Status: $_initializationStatus',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 11,
-                          fontWeight: FontWeight.bold,
-                        ),
-                        textAlign: TextAlign.center,
+                    bottom: 24,
+                    left: 0,
+                    right: 0,
+                    child: Center(
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          ElevatedButton(
+                            onPressed: _sessionActive ? null : _startSession,
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.green.withValues(
+                                alpha: 0.15,
+                              ),
+                              elevation: 0,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(24),
+                              ),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 28,
+                                vertical: 12,
+                              ),
+                              shadowColor: Colors.transparent,
+                            ),
+                            child: const Text(
+                              'Start',
+                              style: TextStyle(color: Colors.white),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          ElevatedButton(
+                            onPressed: _sessionActive ? _endSession : null,
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.red.withValues(
+                                alpha: 0.12,
+                              ),
+                              elevation: 0,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(24),
+                              ),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 28,
+                                vertical: 12,
+                              ),
+                              shadowColor: Colors.transparent,
+                            ),
+                            child: const Text(
+                              'End',
+                              style: TextStyle(color: Colors.white),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ),
 
-                  // Knee angle info (bottom left)
-                  if (_kneeAnalysis != null)
+                  // Initialization status indicator (only show if not ready)
+                  if (!_classifiersReady)
                     Positioned(
-                      bottom: 16,
+                      top: 90,
                       left: 16,
+                      right: 16,
                       child: Container(
                         padding: const EdgeInsets.all(8),
                         decoration: BoxDecoration(
-                          color: Colors.black.withValues(alpha: 0.7),
-                          borderRadius: BorderRadius.circular(8),
+                          color: Colors.red.withValues(alpha: 0.8),
+                          borderRadius: BorderRadius.circular(4),
                         ),
-                        child: DefaultTextStyle(
+                        child: Text(
+                          'Init: ${_initializationAttempted ? "YES" : "NO"} | Status: $_initializationStatus',
                           style: const TextStyle(
                             color: Colors.white,
                             fontSize: 11,
+                            fontWeight: FontWeight.bold,
                           ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                'R Knee: ${(_kneeAnalysis!['right']['angle'] as double).toStringAsFixed(0)}°',
-                                style: TextStyle(
-                                  color:
-                                      _kneeAnalysis!['right']['error']
-                                          ? Colors.red
-                                          : Colors.white,
-                                ),
-                              ),
-                              Text(
-                                'L Knee: ${(_kneeAnalysis!['left']['angle'] as double).toStringAsFixed(0)}°',
-                                style: TextStyle(
-                                  color:
-                                      _kneeAnalysis!['left']['error']
-                                          ? Colors.red
-                                          : Colors.white,
-                                ),
-                              ),
-                              if (_kneeAnalysis!['error'] as bool)
-                                const Text(
-                                  'Check knee angles!',
-                                  style: TextStyle(
-                                    color: Colors.red,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                            ],
-                          ),
+                          textAlign: TextAlign.center,
                         ),
                       ),
                     ),
@@ -611,6 +858,7 @@ class _LungesPainter extends CustomPainter {
   final String currentStage;
   final InputImageRotation rotation;
   final bool mirror;
+  final String? errorClass;
 
   _LungesPainter({
     required this.pose,
@@ -620,6 +868,7 @@ class _LungesPainter extends CustomPainter {
     required this.currentStage,
     required this.rotation,
     required this.mirror,
+    this.errorClass,
   });
 
   @override
@@ -657,14 +906,14 @@ class _LungesPainter extends CustomPainter {
 
     final linePaint =
         Paint()
-          ..color = Colors.greenAccent
+          ..color = errorClass == 'K' ? Colors.orangeAccent : Colors.greenAccent
           ..strokeWidth = 3
           ..style = PaintingStyle.stroke
           ..strokeCap = StrokeCap.round;
 
     final jointPaint =
         Paint()
-          ..color = Colors.green
+          ..color = errorClass == 'K' ? Colors.orange : Colors.green
           ..style = PaintingStyle.fill;
 
     // Draw skeleton
@@ -736,5 +985,6 @@ class _LungesPainter extends CustomPainter {
   bool shouldRepaint(covariant _LungesPainter old) =>
       old.pose != pose ||
       old.kneeAnalysis != kneeAnalysis ||
-      old.currentStage != currentStage;
+      old.currentStage != currentStage ||
+      old.errorClass != errorClass;
 }

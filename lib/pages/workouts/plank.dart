@@ -6,6 +6,9 @@ import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
 import 'package:onnxruntime/onnxruntime.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import '../../../components/camera_widget.dart';
 
 class Plank extends StatefulWidget {
@@ -34,6 +37,20 @@ class _PlankState extends State<Plank> {
   Timer? _timer;
   bool _holding = false;
 
+  // New: whether user pressed Start to allow timer to begin
+  bool _userRequestedStart = false;
+
+  // Firebase initialized flag
+  bool _firebaseInitialized = false;
+
+  // New: session saved notification flag
+  bool _sessionSaved = false;
+
+  // New state fields to hold angles / deviation to display
+  double? _bodyAngleDeg;
+  double? _segAngleDeg;
+  double? _hipDeviationPx;
+
   InputImageRotation _rotation = InputImageRotation.rotation0deg;
   OrtSession? _onnxSession;
 
@@ -48,6 +65,7 @@ class _PlankState extends State<Plank> {
     WidgetsBinding.instance.addPostFrameCallback(
       (_) => _showInstructionsDialog(),
     );
+    _initFirebase();
     _loadOnnxModel();
   }
 
@@ -58,6 +76,28 @@ class _PlankState extends State<Plank> {
     _timer?.cancel();
     SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
     super.dispose();
+  }
+
+  // Initialize Firebase (safe to call even if project hasn't wired deps yet)
+  Future<void> _initFirebase() async {
+    if (_firebaseInitialized) return;
+    try {
+      await Firebase.initializeApp();
+      // Ensure there's an authenticated user (use anonymous sign-in as fallback)
+      try {
+        if (FirebaseAuth.instance.currentUser == null) {
+          await FirebaseAuth.instance.signInAnonymously();
+          if (kDebugMode) print('[FirebaseAuth] signed in anonymously');
+        }
+      } catch (authErr) {
+        if (kDebugMode) print('[FirebaseAuth] sign-in failed: $authErr');
+      }
+      _firebaseInitialized = true;
+      if (kDebugMode) print('[Firebase] initialized');
+    } catch (e) {
+      if (kDebugMode) print('[Firebase] init failed: $e');
+      _firebaseInitialized = false;
+    }
   }
 
   Future<void> _loadOnnxModel() async {
@@ -72,6 +112,54 @@ class _PlankState extends State<Plank> {
       if (kDebugMode) print('[ONNX] Model loaded.');
     } catch (e) {
       if (kDebugMode) print('[ONNX] Model load failed: $e');
+    }
+  }
+
+  // Save session to Firestore collection "plank_sessions"
+  Future<bool> _saveSession() async {
+    // Ensure Firebase is initialized and we have a user before saving
+    if (!_firebaseInitialized) {
+      await _initFirebase();
+    }
+    if (!_firebaseInitialized) {
+      if (kDebugMode) print('[Firebase] not initialized, skipping save');
+      return false;
+    }
+
+    try {
+      // Ensure an authenticated user exists (try anonymous sign-in if not)
+      User? user = FirebaseAuth.instance.currentUser;
+      if (user == null) {
+        try {
+          final cred = await FirebaseAuth.instance.signInAnonymously();
+          user = cred.user;
+          if (kDebugMode) {
+            print('[FirebaseAuth] signed in anonymously in saveSession');
+          }
+        } catch (signErr) {
+          if (kDebugMode) {
+            print('[FirebaseAuth] anonymous sign-in failed: $signErr');
+          }
+        }
+      }
+
+      final userId = user?.uid ?? 'unknown';
+
+      final docRef =
+          FirebaseFirestore.instance.collection('plank_sessions').doc();
+      await docRef.set({
+        'duration_seconds': _holdTime.inSeconds,
+        'duration_readable': formattedHoldTime,
+        'timestamp': FieldValue.serverTimestamp(),
+        'userId': userId,
+      });
+      if (kDebugMode) {
+        print('[Firebase] session saved to plank_sessions (${docRef.id})');
+      }
+      return true;
+    } catch (e) {
+      if (kDebugMode) print('[Firebase] save failed: $e');
+      return false;
     }
   }
 
@@ -186,6 +274,11 @@ class _PlankState extends State<Plank> {
   void _analyzePose(Pose pose) {
     final lm = pose.landmarks;
 
+    // Reset angle values initially
+    _bodyAngleDeg = null;
+    _segAngleDeg = null;
+    _hipDeviationPx = null;
+
     // Choose the better visible side
     final lS = lm[PoseLandmarkType.leftShoulder];
     final lH = lm[PoseLandmarkType.leftHip];
@@ -209,6 +302,10 @@ class _PlankState extends State<Plank> {
       _feedback = 'Make sure your side body is fully visible';
       _goodForm = false;
       _stopTimer(reset: true);
+      // ensure angles cleared
+      _bodyAngleDeg = null;
+      _segAngleDeg = null;
+      _hipDeviationPx = null;
       return;
     }
 
@@ -284,10 +381,22 @@ class _PlankState extends State<Plank> {
     final straightOk = bodyAngle >= 170 && bodyAngle <= 190;
     final devOk = dev.abs() <= devThr;
 
+    // store angles/deviation for UI & painter
+    _bodyAngleDeg = bodyAngle;
+    _segAngleDeg = segAngle;
+    _hipDeviationPx = dev;
+
     if (orientationOk && straightOk && devOk) {
       _feedback = 'Good plank!';
       _goodForm = true;
-      _startTimer();
+      // Only start timer if the user explicitly pressed Start
+      if (_userRequestedStart) {
+        _startTimer();
+      } else {
+        // waiting for user to press Start
+        _stopTimer(reset: true);
+        _feedback = 'Good plank! Press Start to begin';
+      }
     } else {
       if (!orientationOk) {
         _feedback = 'Align body parallel to the floor';
@@ -298,8 +407,14 @@ class _PlankState extends State<Plank> {
       } else {
         _feedback = 'Straighten your body';
       }
+      // If the user had requested start, losing good form should PAUSE the timer
+      // (do NOT end the session). If user didn't request start, reset timer.
+      if (_userRequestedStart) {
+        _stopTimer(reset: false); // pause but keep session active
+      } else {
+        _stopTimer(reset: true);
+      }
       _goodForm = false;
-      _stopTimer();
     }
   }
 
@@ -355,22 +470,33 @@ class _PlankState extends State<Plank> {
               case 0:
                 _feedback = 'Hips too low (AI detected)';
                 _goodForm = false;
-                _stopTimer();
                 break;
               case 1:
                 _feedback = 'Hips too high (AI detected)';
                 _goodForm = false;
-                _stopTimer();
                 break;
               case 2:
                 _feedback = 'Good plank (AI verified)';
                 _goodForm = true;
-                _startTimer();
                 break;
               default:
                 _feedback = 'Unknown AI output';
                 _goodForm = false;
-                _stopTimer();
+            }
+            // Apply same start/pause rules as pose analysis:
+            if (_goodForm) {
+              if (_userRequestedStart) {
+                _startTimer();
+              } else {
+                _stopTimer(reset: true);
+                _feedback = 'Good plank! Press Start to begin';
+              }
+            } else {
+              if (_userRequestedStart) {
+                _stopTimer(reset: false); // pause but keep session active
+              } else {
+                _stopTimer(reset: true);
+              }
             }
           } else {
             _feedback = 'Model output empty';
@@ -390,8 +516,12 @@ class _PlankState extends State<Plank> {
     }
   }
 
+  // Modify stop/start timer to respect user session control
   void _startTimer() {
+    // Only allow starting when user requested start and not already holding and good form present
     if (_holding) return;
+    if (!_userRequestedStart) return;
+    if (!_goodForm) return;
     _holding = true;
     _timer ??= Timer.periodic(const Duration(seconds: 1), (_) {
       if (_holding) {
@@ -400,13 +530,58 @@ class _PlankState extends State<Plank> {
     });
   }
 
-  void _stopTimer({bool reset = false}) {
+  // end flag will mark session ended (user must press Start again)
+  void _stopTimer({bool reset = false, bool end = false}) {
     if (!_holding) {
       if (reset) setState(() => _holdTime = Duration.zero);
+      if (end) {
+        _userRequestedStart = false;
+      }
       return;
     }
     _holding = false;
     if (reset) setState(() => _holdTime = Duration.zero);
+    if (end) {
+      _userRequestedStart = false;
+      setState(() {
+        _feedback = 'Session ended';
+      });
+    }
+  }
+
+  // New: handlers for UI buttons
+  void _onStartPressed() {
+    if (_userRequestedStart) return;
+    setState(() {
+      _userRequestedStart = true;
+      _feedback = 'Start pressed: waiting for good form';
+    });
+    // If form already good, attempt to start immediately
+    if (_goodForm) {
+      _startTimer();
+    }
+  }
+
+  // make async so we can save to firestore and show notification
+  Future<void> _onEndPressed() async {
+    _stopTimer(end: true, reset: false);
+    final saved = await _saveSession();
+    if (saved) {
+      setState(() {
+        _sessionSaved = true;
+        _userRequestedStart = false;
+        _feedback = 'Ended by user';
+      });
+      // clear notification after 3 seconds
+      Future.delayed(const Duration(seconds: 3), () {
+        if (mounted) setState(() => _sessionSaved = false);
+      });
+    } else {
+      setState(() {
+        _userRequestedStart = false;
+        _feedback = 'Ended by user (save failed)';
+      });
+    }
   }
 
   String get formattedHoldTime {
@@ -426,21 +601,56 @@ class _PlankState extends State<Plank> {
       context: context,
       barrierDismissible: false,
       builder:
-          (_) => AlertDialog(
-            title: const Text('Plank Instructions'),
-            content: const Text(
-              '1) Get into plank position (side view, elbows or hands).\n'
-              '2) Keep a straight line from shoulders to heels.\n'
-              '3) Ensure the camera sees your full side body.\n'
-              '4) The timer runs only when posture is correct.',
-            ),
-            actions: [
-              ElevatedButton(
-                onPressed: () => Navigator.pop(context),
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.purple),
-                child: const Text('Start'),
+          // ignore: deprecated_member_use
+          (_) => WillPopScope(
+            onWillPop: () async => false, // disable system/back button
+            child: Dialog(
+              // ignore: deprecated_member_use
+              backgroundColor: Theme.of(context).dialogBackgroundColor,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8.0),
               ),
-            ],
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: IntrinsicHeight(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      const Text(
+                        'Plank Instructions',
+                        style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      const Flexible(
+                        child: SingleChildScrollView(
+                          child: Text(
+                            '1) Get into plank position (side view, elbows or hands).\n'
+                            '2) Keep a straight line from shoulders to heels.\n'
+                            '3) Ensure the camera sees your full side body.\n'
+                            '4) The timer runs only when posture is correct.',
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: ElevatedButton(
+                          onPressed: () => Navigator.pop(context),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.purple,
+                          ),
+                          child: const Text('Start'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
           ),
     );
   }
@@ -479,9 +689,59 @@ class _PlankState extends State<Plank> {
                           imageHeight: _imageHeight!,
                           postureGood: _goodForm,
                           rotation: _rotation,
+                          bodyAngleDeg: _bodyAngleDeg,
+                          segAngleDeg: _segAngleDeg,
                         ),
                       ),
                     ),
+                  // CENTER: Start / End buttons
+                  Positioned.fill(
+                    child: IgnorePointer(
+                      ignoring: false,
+                      child: Center(
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            ElevatedButton(
+                              onPressed:
+                                  _userRequestedStart ? null : _onStartPressed,
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.green.withValues(
+                                  alpha: 0.12,
+                                ),
+                                foregroundColor: Colors.greenAccent,
+                                elevation: 0,
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 20,
+                                  vertical: 12,
+                                ),
+                              ),
+                              child: const Text('Start'),
+                            ),
+                            const SizedBox(width: 16),
+                            ElevatedButton(
+                              onPressed:
+                                  (_userRequestedStart || _holding)
+                                      ? _onEndPressed
+                                      : null,
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.red.withValues(
+                                  alpha: 0.12,
+                                ),
+                                foregroundColor: Colors.redAccent,
+                                elevation: 0,
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 20,
+                                  vertical: 12,
+                                ),
+                              ),
+                              child: const Text('End'),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
                   Positioned(
                     bottom: 16,
                     left: 16,
@@ -495,31 +755,88 @@ class _PlankState extends State<Plank> {
                       ),
                       child: DefaultTextStyle(
                         style: const TextStyle(color: Colors.white),
-                        child: Column(
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(
-                              'Hold Time: $formattedHoldTime',
-                              style: const TextStyle(
-                                fontSize: 18,
-                                fontWeight: FontWeight.bold,
-                              ),
+                            // LEFT SIDE: hold time + feedback
+                            Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'Hold Time: $formattedHoldTime',
+                                  style: const TextStyle(
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                Text(
+                                  _feedback,
+                                  style: TextStyle(
+                                    color:
+                                        _goodForm
+                                            ? Colors.greenAccent
+                                            : Colors.orangeAccent,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ],
                             ),
-                            Text(
-                              _feedback,
-                              style: TextStyle(
-                                color:
-                                    _goodForm
-                                        ? Colors.greenAccent
-                                        : Colors.orangeAccent,
-                                fontWeight: FontWeight.w600,
-                              ),
+
+                            // RIGHT SIDE: angles info
+                            Column(
+                              crossAxisAlignment: CrossAxisAlignment.end,
+                              children: [
+                                Text(
+                                  'Hip angle: ${_bodyAngleDeg != null ? "${_bodyAngleDeg!.toStringAsFixed(1)}°" : "-"}',
+                                  style: const TextStyle(fontSize: 14),
+                                ),
+                                Text(
+                                  'Orientation: ${_segAngleDeg != null ? "${_segAngleDeg!.toStringAsFixed(1)}°" : "-"}',
+                                  style: const TextStyle(fontSize: 14),
+                                ),
+                                Text(
+                                  'Hip dev: ${_hipDeviationPx != null ? _hipDeviationPx!.toStringAsFixed(1) : "-"} px',
+                                  style: const TextStyle(fontSize: 14),
+                                ),
+                              ],
                             ),
                           ],
                         ),
                       ),
                     ),
                   ),
+
+                  // NOTIFICATION: show small message below the bottom HUD when session saved
+                  if (_sessionSaved)
+                    Positioned(
+                      bottom: 8,
+                      left: 16,
+                      right: 16,
+                      child: Center(
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            vertical: 6,
+                            horizontal: 12,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.black87,
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                              color: Colors.greenAccent,
+                              width: 1.5,
+                            ),
+                          ),
+                          child: const Text(
+                            'Session saved.',
+                            style: TextStyle(
+                              color: Colors.greenAccent,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
                 ],
               )
               : const Center(
@@ -539,12 +856,18 @@ class _PlankPainter extends CustomPainter {
   final bool postureGood;
   final InputImageRotation rotation;
 
+  // new fields to receive angle values
+  final double? bodyAngleDeg;
+  final double? segAngleDeg;
+
   _PlankPainter({
     required this.pose,
     required this.imageWidth,
     required this.imageHeight,
     required this.postureGood,
     required this.rotation,
+    this.bodyAngleDeg,
+    this.segAngleDeg,
   });
 
   @override
@@ -619,9 +942,67 @@ class _PlankPainter extends CustomPainter {
     for (final l in lm.values) {
       canvas.drawCircle(map(l.x, l.y), 5, jointPaint);
     }
+
+    // Draw angle text close to hip center if available
+    Offset? hipCenter;
+    final lHip = lm[PoseLandmarkType.leftHip];
+    final rHip = lm[PoseLandmarkType.rightHip];
+    if (lHip != null && rHip != null) {
+      hipCenter = Offset((lHip.x + rHip.x) / 2.0, (lHip.y + rHip.y) / 2.0);
+    } else if (lHip != null) {
+      hipCenter = Offset(lHip.x, lHip.y);
+    } else if (rHip != null) {
+      hipCenter = Offset(rHip.x, rHip.y);
+    }
+
+    if (hipCenter != null && (bodyAngleDeg != null || segAngleDeg != null)) {
+      final pos = map(hipCenter.dx, hipCenter.dy);
+      final textStyle = TextStyle(
+        color: postureGood ? Colors.greenAccent : Colors.orangeAccent,
+        fontSize: 12,
+        fontWeight: FontWeight.bold,
+      );
+
+      final angleLines = <String>[];
+      if (bodyAngleDeg != null) {
+        angleLines.add('Hip: ${bodyAngleDeg!.toStringAsFixed(1)}°');
+      }
+      if (segAngleDeg != null) {
+        angleLines.add('Orient: ${segAngleDeg!.toStringAsFixed(1)}°');
+      }
+
+      final tp = TextPainter(
+        text: TextSpan(
+          children:
+              angleLines
+                  .map((s) => TextSpan(text: '$s\n', style: textStyle))
+                  .toList(),
+        ),
+        textAlign: TextAlign.left,
+        textDirection: TextDirection.ltr,
+      )..layout();
+
+      // draw background for readability
+      final bgRect = Rect.fromLTWH(
+        pos.dx + 8,
+        pos.dy - tp.height / 2 - 6,
+        tp.width + 8,
+        tp.height + 8,
+      );
+      final bgPaint = Paint()..color = Colors.black54;
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(bgRect, const Radius.circular(6)),
+        bgPaint,
+      );
+
+      tp.paint(canvas, Offset(pos.dx + 12, pos.dy - tp.height / 2 - 2));
+    }
   }
 
   @override
   bool shouldRepaint(covariant _PlankPainter old) =>
-      old.pose != pose || old.postureGood != postureGood;
+      old.pose != pose ||
+      old.postureGood != postureGood ||
+      old.bodyAngleDeg != bodyAngleDeg ||
+      old.segAngleDeg != segAngleDeg;
 }

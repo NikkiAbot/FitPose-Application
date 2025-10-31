@@ -136,18 +136,6 @@ class _WorkoutAnalyticsWidgetState extends State<WorkoutAnalyticsWidget> {
             y = sets.toDouble(); // not used; kept for completeness
           }
           tempSpots.add(FlSpot(date.day.toDouble(), y));
-
-          // NEW: requested snippet
-          double yValue;
-          if (selectedFilter == GraphFilter.reps) {
-            yValue = _getRepsYIndex(reps).toDouble();
-          } else if (selectedFilter == GraphFilter.sets) {
-            yValue = sets.toDouble();
-          } else {
-            yValue = 0;
-          }
-          tempSpots.add(FlSpot(date.day.toDouble(), yValue));
-
           // accuracy per-day aggregates
           final day = date.day;
           repsPerDay[day] = (repsPerDay[day] ?? 0) + reps;
@@ -158,7 +146,7 @@ class _WorkoutAnalyticsWidgetState extends State<WorkoutAnalyticsWidget> {
         if (date.year == selectedDate.year &&
             date.month == selectedDate.month) {
           // duration (bucketed indices for duration view)
-          int yIndex = _getPlankYIndex(duration) as int;
+          int yIndex = _getPlankYIndex(duration);
           tempSpots.add(FlSpot(date.day.toDouble(), yIndex.toDouble()));
           if (yIndex > tempMax) tempMax = yIndex;
 
@@ -236,43 +224,28 @@ class _WorkoutAnalyticsWidgetState extends State<WorkoutAnalyticsWidget> {
     });
   }
 
-  // Plank duration: return midpoints of each duration bucket
-  double _getPlankYIndex(int seconds) {
+  // Map actual duration in seconds to Y-axis index
+  int _getPlankYIndex(int seconds) {
     if (seconds == 0) return 0;
-    if (seconds <= 10) return 5; // 1–10s
-    if (seconds <= 20) return 15; // 11–20s
-    if (seconds <= 35) return 28; // 21–35s
-    if (seconds <= 50) return 43; // 36–50s
-    if (seconds <= 60) return 55; // 51–60s
-    if (seconds <= 75) return 68; // 61–75s
-    if (seconds <= 85) return 80; // 76–85s
-    return 88; // 86–90s+
+    if (seconds <= 10) return 1;
+    if (seconds <= 20) return 2;
+    if (seconds <= 35) return 3;
+    if (seconds <= 50) return 4;
+    if (seconds <= 60) return 5;
+    if (seconds <= 75) return 6;
+    if (seconds <= 85) return 7;
+    return 8;
   }
 
-  // Sets: return midpoints matching '0-5', '6-10', '11-15', ...
-  double _getSetsYIndex(int sets) {
-    if (sets <= 5) return 2.5; // 0–5
-    if (sets <= 10) return 8.0; // 6–10
-    if (sets <= 15) return 13.0; // 11–15
-    if (sets <= 20) return 18.0; // 16–20
-    if (sets <= 30) return 25.5; // 21–30
-    if (sets <= 40) return 35.5; // 31–40
-    return 45.5; // 41–50+
-  }
-
-  // Reps: return midpoints of each labeled range
-  double _getRepsYIndex(int reps) {
-    if (reps <= 0) return 0;
-    if (reps <= 4) return 2.5;
-    if (reps <= 8) return 6.5;
-    if (reps <= 12) return 10.5;
-    if (reps <= 16) return 14.5;
-    if (reps <= 20) return 18.5;
-    if (reps <= 24) return 22.5;
-    if (reps <= 28) return 26.5;
-    if (reps <= 32) return 30.5;
-    if (reps <= 36) return 34.5;
-    return 38.5; // 37–40+
+  // NEW: Map sets count to Y-axis bucket index (0..6)
+  int _getSetsYIndex(int sets) {
+    if (sets <= 5) return 0; // 0-5
+    if (sets <= 10) return 1; // 6-10
+    if (sets <= 15) return 2; // 11-15
+    if (sets <= 20) return 3; // 16-20
+    if (sets <= 30) return 4; // 21-30
+    if (sets <= 40) return 5; // 31-40
+    return 6; // 41-50 (or more)
   }
 
   bool _isSameDate(DateTime a, DateTime b) =>

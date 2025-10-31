@@ -44,6 +44,8 @@ class _BicepCurlState extends State<BicepCurl> {
   bool _postureGood = false;
 
   int _curlReps = 0;
+  // NEW: count all attempted reps (regardless of form)
+  int _attemptedReps = 0;
 
   // NEW: set tracking
   int _setsCount = 0; // total completed sets
@@ -426,27 +428,34 @@ class _BicepCurlState extends State<BicepCurl> {
 
       // State transition: flexed → extended (raising phase completes)
       if (angSmooth > upThreshold) {
-        if (_cycleOk) {
-          if (_sessionActive) {
-            // Count rep and derive sets from total reps (every 8 reps = +1 set)
+        if (_sessionActive) {
+          // Count every attempt (regardless of form)
+          _attemptedReps += 1;
+
+          if (_cycleOk) {
+            // Good-form rep counting remains unchanged
             _curlReps += 1;
             _setsCount = _curlReps ~/ repsPerSet;
             _repsInCurrentSet = _curlReps % repsPerSet;
             _feedback = 'Rep ✓';
             if (kDebugMode) {
               print(
-                '[FSM] ✅ Rep counted! Reps: $_curlReps, Sets: $_setsCount, InSet: $_repsInCurrentSet',
+                '[FSM] ✅ Rep counted! Reps: $_curlReps, Attempts: $_attemptedReps, Sets: $_setsCount, InSet: $_repsInCurrentSet',
               );
             }
           } else {
-            _feedback = 'Press Start to record reps';
+            _feedback = 'Fix form';
             if (kDebugMode) {
-              print('[FSM] Rep detected but session not active - not counted');
+              print(
+                '[FSM] ❌ Bad-form attempt counted. Attempts: $_attemptedReps',
+              );
             }
           }
         } else {
-          _feedback = 'Fix form';
-          if (kDebugMode) print('[FSM] ❌ Rep NOT counted (bad form)');
+          _feedback = 'Press Start to record reps';
+          if (kDebugMode) {
+            print('[FSM] Rep detected but session not active - not counted');
+          }
         }
         _fsmState = 'extended';
         _cycleOk = false;
@@ -519,6 +528,8 @@ class _BicepCurlState extends State<BicepCurl> {
       _curlReps = 0;
       _setsCount = 0;
       _repsInCurrentSet = 0;
+      // reset attempted reps for a fresh session
+      _attemptedReps = 0;
     });
   }
 
@@ -547,6 +558,8 @@ class _BicepCurlState extends State<BicepCurl> {
         'reps': _curlReps,
         'sets': _setsCount,
         'repsInCurrentSet': _repsInCurrentSet,
+        // NEW: persist attempted reps
+        'attemptedReps': _attemptedReps,
       };
       await firestore.collection('bicep_sessions').add(doc);
       if (mounted) {

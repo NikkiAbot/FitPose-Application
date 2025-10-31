@@ -54,6 +54,13 @@ class _PlankState extends State<Plank> {
   InputImageRotation _rotation = InputImageRotation.rotation0deg;
   OrtSession? _onnxSession;
 
+  // NEW: attempted plank duration (in seconds) and its timer
+  int _attemptedPlank = 0;
+  Timer? _attemptTimer;
+
+  // NEW: track if a body is currently detected
+  bool _bodyDetected = false;
+
   @override
   void initState() {
     super.initState();
@@ -74,6 +81,8 @@ class _PlankState extends State<Plank> {
     _poseDetector.close();
     _onnxSession?.release();
     _timer?.cancel();
+    // NEW: cancel attempt timer
+    _attemptTimer?.cancel();
     SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
     super.dispose();
   }
@@ -152,6 +161,8 @@ class _PlankState extends State<Plank> {
         'duration_readable': formattedHoldTime,
         'timestamp': FieldValue.serverTimestamp(),
         'userId': userId,
+        // NEW: include attempted plank seconds
+        'attemptedPlank': _attemptedPlank,
       });
       if (kDebugMode) {
         print('[Firebase] session saved to plank_sessions (${docRef.id})');
@@ -215,9 +226,14 @@ class _PlankState extends State<Plank> {
         _latestPose = null;
         _feedback = 'No person detected';
         _goodForm = false;
-        _stopTimer();
+        // NEW: mark as not detected and pause timers
+        _bodyDetected = false;
+        _stopTimer(); // pause only; do not reset during an active session
         return;
       }
+
+      // NEW: body detected
+      _bodyDetected = true;
 
       _latestPose = poses.first;
       _analyzePose(_latestPose!);
@@ -229,7 +245,9 @@ class _PlankState extends State<Plank> {
       _latestPose = null;
       _feedback = 'Error processing frame';
       _goodForm = false;
-      _stopTimer();
+      // NEW: treat as no body detected during error
+      _bodyDetected = false;
+      _stopTimer(); // pause only on error
     }
   }
 
@@ -301,7 +319,12 @@ class _PlankState extends State<Plank> {
     if (s == null || h == null || a == null) {
       _feedback = 'Make sure your side body is fully visible';
       _goodForm = false;
-      _stopTimer(reset: true);
+      // NEW: pause if session active; reset only if not started
+      if (_userRequestedStart) {
+        _stopTimer(reset: false);
+      } else {
+        _stopTimer(reset: true);
+      }
       // ensure angles cleared
       _bodyAngleDeg = null;
       _segAngleDeg = null;
@@ -322,7 +345,12 @@ class _PlankState extends State<Plank> {
     if (imgMin > 0 && saLen < imgMin * 0.25) {
       _feedback = 'Move closer to the camera';
       _goodForm = false;
-      _stopTimer(reset: true);
+      // NEW: pause if session active; reset only if not started
+      if (_userRequestedStart) {
+        _stopTimer(reset: false);
+      } else {
+        _stopTimer(reset: true);
+      }
       return;
     }
 
@@ -333,7 +361,12 @@ class _PlankState extends State<Plank> {
       if (ratio > 0.5) {
         _feedback = 'Turn your side to the camera';
         _goodForm = false;
-        _stopTimer(reset: true);
+        // NEW: pause if session active; reset only if not started
+        if (_userRequestedStart) {
+          _stopTimer(reset: false);
+        } else {
+          _stopTimer(reset: true);
+        }
         return;
       }
     }
@@ -389,7 +422,6 @@ class _PlankState extends State<Plank> {
     if (orientationOk && straightOk && devOk) {
       _feedback = 'Good plank!';
       _goodForm = true;
-      // Only start timer if the user explicitly pressed Start
       if (_userRequestedStart) {
         _startTimer();
       } else {
@@ -555,16 +587,35 @@ class _PlankState extends State<Plank> {
     setState(() {
       _userRequestedStart = true;
       _feedback = 'Start pressed: waiting for good form';
+      // reset attempted plank at session start
+      _attemptedPlank = 0;
     });
+
+    // Start attempt timer (counts only when a body is detected)
+    _attemptTimer?.cancel();
+    _attemptTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      // NEW: attemptedPlank only increments when session active AND body detected
+      if (_userRequestedStart && _bodyDetected) {
+        _attemptedPlank += 1; // backend metric; no UI update
+      } else if (!_userRequestedStart) {
+        // stop timer if session not active
+        _attemptTimer?.cancel();
+        _attemptTimer = null;
+      }
+    });
+
     // If form already good, attempt to start immediately
     if (_goodForm) {
       _startTimer();
     }
   }
 
-  // make async so we can save to firestore and show notification
   Future<void> _onEndPressed() async {
     _stopTimer(end: true, reset: false);
+    // stop attempt timer at session end
+    _attemptTimer?.cancel();
+    _attemptTimer = null;
+
     final saved = await _saveSession();
     if (saved) {
       setState(() {

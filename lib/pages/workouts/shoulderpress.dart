@@ -60,6 +60,9 @@ class _ShoulderPressState extends State<ShoulderPress> {
   String _state = 'waiting'; // waiting | lowered | raised
   bool _anomaly = false;
 
+  // NEW: count all attempted reps (regardless of form)
+  int _attemptedReps = 0;
+
   // NEW: Sets/session tracking
   int _setsCount = 0;
   int _repsInCurrentSet = 0;
@@ -611,6 +614,11 @@ class _ShoulderPressState extends State<ShoulderPress> {
       }
     } else if (_state == 'raised') {
       if (_avgElbow! < loweredThresh) {
+        // NEW: count attempted rep on every completed cycle during active session
+        if (_sessionActive) {
+          _attemptedReps += 1;
+        }
+
         if (!_anomaly && _postureGood) {
           // Only increment when a session is active
           if (_sessionActive) {
@@ -661,6 +669,8 @@ class _ShoulderPressState extends State<ShoulderPress> {
       _reps = 0;
       _setsCount = 0;
       _repsInCurrentSet = 0;
+      // NEW: reset attempted reps
+      _attemptedReps = 0;
     });
   }
 
@@ -687,6 +697,8 @@ class _ShoulderPressState extends State<ShoulderPress> {
         'reps': _reps,
         'sets': _setsCount,
         'repsInCurrentSet': _repsInCurrentSet,
+        // NEW: persist attempted reps
+        'attemptedReps': _attemptedReps,
       };
       await firestore.collection('shoulderpress_sessions').add(doc);
       if (mounted) {

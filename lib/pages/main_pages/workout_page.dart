@@ -29,36 +29,60 @@ class _WorkoutPageState extends State<WorkoutPage> {
       appBar: const Header(),
 
       body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.only(bottom: 16),
-          physics: const BouncingScrollPhysics(),
-          child: Column(
-            children: [
-              Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 16.0,
-                  vertical: 20.0,
-                ),
-                child: Center(
-                  child: Text(
-                    'Workout Analytics',
-                    textAlign: TextAlign.center,
-                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                      fontWeight: FontWeight.bold,
-                    ),
+        child: Column(
+          children: [
+            // Title
+            Padding(
+              padding: const EdgeInsets.symmetric(
+                horizontal: 16.0,
+                vertical: 20.0,
+              ),
+              child: SizedBox(
+                width: double.infinity,
+                child: Text(
+                  'Workout Analytics',
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 28, // bigger to span visually across
                   ),
                 ),
               ),
+            ),
 
-              // Analytics widget for the selected exercise
-              WorkoutAnalyticsWidget(exercise: selectedExercise),
-              const SizedBox(height: 16),
+            // Scrollable analytics content
+            Expanded(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.only(bottom: 16),
+                physics: const BouncingScrollPhysics(),
+                child: Column(
+                  children: [
+                    // Analytics widget for the selected exercise
+                    WorkoutAnalyticsWidget(exercise: selectedExercise),
+                    const SizedBox(height: 16),
+                  ],
+                ),
+              ),
+            ),
 
-              // Exercise filter buttons
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16.0),
+            // Sticky exercise filter bar
+            SafeArea(
+              top: false,
+              child: Container(
+                decoration: BoxDecoration(
+                  color: Theme.of(context).scaffoldBackgroundColor,
+                  boxShadow: const [
+                    BoxShadow(
+                      color: Colors.black12,
+                      blurRadius: 6,
+                      offset: Offset(0, -2),
+                    ),
+                  ],
+                ),
+                padding: const EdgeInsets.symmetric(vertical: 10),
                 child: SingleChildScrollView(
                   scrollDirection: Axis.horizontal,
+                  padding: const EdgeInsets.symmetric(horizontal: 16.0),
                   child: Row(
                     children:
                         exercises.map((exercise) {
@@ -100,10 +124,8 @@ class _WorkoutPageState extends State<WorkoutPage> {
                   ),
                 ),
               ),
-
-              const SizedBox(height: 16),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
 

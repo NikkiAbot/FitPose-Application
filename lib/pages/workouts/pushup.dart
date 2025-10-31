@@ -37,6 +37,9 @@ class _PushUpState extends State<PushUp> {
   final int _repsPerSet = 8; // 8 reps per set
   bool _downPosition = false;
 
+  // NEW: count all attempted reps (regardless of form)
+  int _attemptedReps = 0;
+
   String _elbowAngleDisplay = '-';
   String _torsoAngleDisplay = '-';
   String _verticalMovementDisplay = '-';
@@ -244,6 +247,7 @@ class _PushUpState extends State<PushUp> {
     const double verticalThresholdDown = 0.04;
     const double verticalThresholdUp = 0.02;
 
+    // Detect "down" phase (beginning of a rep)
     if (_movementDelta > verticalThresholdDown &&
         elbowAngle < 80 &&
         torsoAligned) {
@@ -253,11 +257,18 @@ class _PushUpState extends State<PushUp> {
       _feedback =
           _sessionActive ? 'Going down...' : 'Good form detected - press Start';
       _goodForm = true;
-    } else if (_movementDelta > verticalThresholdUp &&
-        elbowAngle > 150 &&
-        _downPosition &&
-        torsoAligned) {
+    }
+    // NEW: Detect "up" event regardless of form (attempted rep)
+    else if (
+    // up event (form-agnostic)
+    _movementDelta > verticalThresholdUp && elbowAngle > 150 && _downPosition) {
+      // Count every attempt if session is active
       if (_sessionActive) {
+        _attemptedReps += 1;
+      }
+
+      if (_sessionActive && torsoAligned) {
+        // Good-form rep
         _pushUpCount++; // running total reps (never reset per set)
         _downPosition = false;
 
@@ -271,8 +282,9 @@ class _PushUpState extends State<PushUp> {
         }
         _goodForm = true;
       } else {
-        _feedback = 'Good form - press Start to begin';
-        _goodForm = true;
+        // Bad-form attempt: end the cycle so next rep can start fresh
+        _downPosition = false;
+        // keep feedback minimal; UI unchanged
       }
     } else {
       _feedback = torsoAligned ? 'Lower your body' : 'Keep your body straight';
@@ -392,6 +404,8 @@ class _PushUpState extends State<PushUp> {
       _downPosition = false;
       _previousHipY = 0.0;
       _feedback = 'Session started. Maintain form.';
+      // NEW: reset attempted reps for this session
+      _attemptedReps = 0;
     });
     _sessionTimer?.cancel();
     _sessionTimer = Timer.periodic(const Duration(seconds: 1), (_) {
@@ -418,13 +432,14 @@ class _PushUpState extends State<PushUp> {
       final userId = user?.uid ?? 'anonymous';
       final durationSeconds = _elapsed.inSeconds;
 
-      // Save only reps (total) and sets; remove 'total'
       await FirebaseFirestore.instance.collection('pushup_sessions').add({
         'reps': _pushUpCount, // total overall reps
         'sets': _setCount, // auto-calculated as reps ~/ 8
         'duration': durationSeconds,
         'timestamp': FieldValue.serverTimestamp(),
         'userId': userId,
+        // NEW: persist attempted reps
+        'attemptedReps': _attemptedReps,
       });
 
       if (mounted) {

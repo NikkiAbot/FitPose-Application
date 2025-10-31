@@ -13,7 +13,7 @@ class WorkoutAnalyticsWidget extends StatefulWidget {
   State<WorkoutAnalyticsWidget> createState() => _WorkoutAnalyticsWidgetState();
 }
 
-enum GraphFilter { reps, sets }
+enum GraphFilter { reps, sets, accuracy, duration }
 
 class _WorkoutAnalyticsWidgetState extends State<WorkoutAnalyticsWidget> {
   DateTime selectedDate = DateTime.now();
@@ -26,6 +26,10 @@ class _WorkoutAnalyticsWidgetState extends State<WorkoutAnalyticsWidget> {
   int totalReps = 0;
   int totalSets = 0;
   int totalDuration = 0;
+
+  // NEW: attempted reps (no UI usage; backend analytics only)
+  int dailyAttemptedReps = 0;
+  int totalAttemptedReps = 0;
 
   bool isLoading = true;
 
@@ -64,10 +68,31 @@ class _WorkoutAnalyticsWidgetState extends State<WorkoutAnalyticsWidget> {
 
     int dr = 0, ds = 0, dd = 0;
     int tr = 0, ts = 0, td = 0;
+    // NEW: accumulators for attempted reps
+    int dar = 0, tar = 0;
     List<FlSpot> tempSpots = [];
     int tempMax = 0;
 
+    // NEW: per-day aggregators for accuracy chart
+    final Map<int, int> repsPerDay = {};
+    final Map<int, int> attemptsPerDay = {};
+    // NEW: accuracy spots container
+    List<FlSpot> tempAccuracySpots = [];
+
+    // NEW: plank-specific per-day aggregates for accuracy
+    final Map<int, int> plankDurationPerDay = {};
+    final Map<int, int> plankAttemptPerDay = {};
+    // NEW: plank accuracy spots
+    List<FlSpot> tempPlankAccuracySpots = [];
+
     final isPlank = widget.exercise.toLowerCase() == 'plank';
+    // Remap reps/sets to duration when on plank
+    final effectiveFilter =
+        isPlank &&
+                (selectedFilter == GraphFilter.reps ||
+                    selectedFilter == GraphFilter.sets)
+            ? GraphFilter.duration
+            : selectedFilter;
 
     for (var doc in querySnapshot.docs) {
       final data = doc.data();
@@ -84,30 +109,92 @@ class _WorkoutAnalyticsWidgetState extends State<WorkoutAnalyticsWidget> {
       if (!isPlank) {
         final reps = data['reps'] as int? ?? 0;
         final sets = data['sets'] as int? ?? 0;
+        final attempts = data['attemptedReps'] as int? ?? 0;
+        // NEW: pull attempted reps from Firestore
 
         tr += reps;
         ts += sets;
+        // NEW: total attempted reps
+        tar += attempts;
+
         if (_isSameDate(date, selectedDate)) {
           dr += reps;
           ds += sets;
+          // NEW: daily attempted reps
+          dar += attempts;
         }
 
-        // Graph: reps/sets
+        // Graph: reps/sets (sets bucketed, reps raw)
         if (date.year == selectedDate.year &&
             date.month == selectedDate.month) {
-          final value = selectedFilter == GraphFilter.reps ? reps : sets;
-          tempSpots.add(FlSpot(date.day.toDouble(), value.toDouble()));
-          if (value > tempMax) tempMax = value;
+          double y;
+          if (selectedFilter == GraphFilter.reps) {
+            y = reps.toDouble();
+          } else if (selectedFilter == GraphFilter.sets) {
+            y = _getSetsYIndex(sets).toDouble();
+          } else {
+            y = sets.toDouble(); // not used; kept for completeness
+          }
+          tempSpots.add(FlSpot(date.day.toDouble(), y));
+
+          // NEW: requested snippet
+          double yValue;
+          if (selectedFilter == GraphFilter.reps) {
+            yValue = _getRepsYIndex(reps).toDouble();
+          } else if (selectedFilter == GraphFilter.sets) {
+            yValue = sets.toDouble();
+          } else {
+            yValue = 0;
+          }
+          tempSpots.add(FlSpot(date.day.toDouble(), yValue));
+
+          // accuracy per-day aggregates
+          final day = date.day;
+          repsPerDay[day] = (repsPerDay[day] ?? 0) + reps;
+          attemptsPerDay[day] = (attemptsPerDay[day] ?? 0) + attempts;
         }
       } else {
-        // Graph: duration only
+        // Plank: duration + attemptedPlank
         if (date.year == selectedDate.year &&
             date.month == selectedDate.month) {
-          // Map duration to Y-axis index (custom ranges)
-          int yIndex = _getPlankYIndex(duration);
+          // duration (bucketed indices for duration view)
+          int yIndex = _getPlankYIndex(duration) as int;
           tempSpots.add(FlSpot(date.day.toDouble(), yIndex.toDouble()));
           if (yIndex > tempMax) tempMax = yIndex;
+
+          // NEW: accumulate per-day for accuracy = duration / attemptedPlank
+          final attemptsDur = data['attemptedPlank'] as int? ?? 0;
+          final day = date.day;
+          plankDurationPerDay[day] = (plankDurationPerDay[day] ?? 0) + duration;
+          plankAttemptPerDay[day] =
+              (plankAttemptPerDay[day] ?? 0) + attemptsDur;
         }
+      }
+    }
+
+    // Build accuracy spots for non-plank (reps/attempts)
+    if (!isPlank) {
+      final days =
+          <int>{...repsPerDay.keys, ...attemptsPerDay.keys}.toList()..sort();
+      for (final d in days) {
+        final r = repsPerDay[d] ?? 0;
+        final a = attemptsPerDay[d] ?? 0;
+        final acc = formAccuracy(r, a);
+        tempAccuracySpots.add(FlSpot(d.toDouble(), acc));
+      }
+    } else {
+      // NEW: Build accuracy spots for plank (duration/attemptedPlank)
+      final days =
+          <int>{
+              ...plankDurationPerDay.keys,
+              ...plankAttemptPerDay.keys,
+            }.toList()
+            ..sort();
+      for (final d in days) {
+        final dur = plankDurationPerDay[d] ?? 0;
+        final att = plankAttemptPerDay[d] ?? 0;
+        final acc = formAccuracy(dur, att);
+        tempPlankAccuracySpots.add(FlSpot(d.toDouble(), acc));
       }
     }
 
@@ -120,23 +207,72 @@ class _WorkoutAnalyticsWidgetState extends State<WorkoutAnalyticsWidget> {
       totalSets = ts;
       totalDuration = td;
 
-      monthlySpots = tempSpots;
-      maxY = isPlank ? 8 : 10; // 9 labels for plank (0-8)
+      // NEW: publish attempted reps to state (no UI)
+      dailyAttemptedReps = dar;
+      totalAttemptedReps = tar;
+
+      // Select graph data
+      if (isPlank) {
+        monthlySpots =
+            effectiveFilter == GraphFilter.accuracy
+                ? tempPlankAccuracySpots // NEW: plank accuracy spots
+                : tempSpots; // duration buckets
+      } else {
+        monthlySpots =
+            selectedFilter == GraphFilter.accuracy
+                ? tempAccuracySpots
+                : tempSpots;
+      }
+
+      // Y-axis range per mode
+      maxY =
+          isPlank
+              ? (effectiveFilter == GraphFilter.accuracy ? 100 : 8)
+              : (selectedFilter == GraphFilter.accuracy
+                  ? 100
+                  : (selectedFilter == GraphFilter.sets ? 6 : 10));
+
       isLoading = false;
     });
   }
 
-  // Map actual duration in seconds to Y-axis index
-  int _getPlankYIndex(int seconds) {
+  // Plank duration: return midpoints of each duration bucket
+  double _getPlankYIndex(int seconds) {
     if (seconds == 0) return 0;
-    if (seconds <= 10) return 1;
-    if (seconds <= 20) return 2;
-    if (seconds <= 35) return 3;
-    if (seconds <= 50) return 4;
-    if (seconds <= 60) return 5;
-    if (seconds <= 75) return 6;
-    if (seconds <= 85) return 7;
-    return 8;
+    if (seconds <= 10) return 5; // 1–10s
+    if (seconds <= 20) return 15; // 11–20s
+    if (seconds <= 35) return 28; // 21–35s
+    if (seconds <= 50) return 43; // 36–50s
+    if (seconds <= 60) return 55; // 51–60s
+    if (seconds <= 75) return 68; // 61–75s
+    if (seconds <= 85) return 80; // 76–85s
+    return 88; // 86–90s+
+  }
+
+  // Sets: return midpoints matching '0-5', '6-10', '11-15', ...
+  double _getSetsYIndex(int sets) {
+    if (sets <= 5) return 2.5; // 0–5
+    if (sets <= 10) return 8.0; // 6–10
+    if (sets <= 15) return 13.0; // 11–15
+    if (sets <= 20) return 18.0; // 16–20
+    if (sets <= 30) return 25.5; // 21–30
+    if (sets <= 40) return 35.5; // 31–40
+    return 45.5; // 41–50+
+  }
+
+  // Reps: return midpoints of each labeled range
+  double _getRepsYIndex(int reps) {
+    if (reps <= 0) return 0;
+    if (reps <= 4) return 2.5;
+    if (reps <= 8) return 6.5;
+    if (reps <= 12) return 10.5;
+    if (reps <= 16) return 14.5;
+    if (reps <= 20) return 18.5;
+    if (reps <= 24) return 22.5;
+    if (reps <= 28) return 26.5;
+    if (reps <= 32) return 30.5;
+    if (reps <= 36) return 34.5;
+    return 38.5; // 37–40+
   }
 
   bool _isSameDate(DateTime a, DateTime b) =>
@@ -171,85 +307,145 @@ class _WorkoutAnalyticsWidgetState extends State<WorkoutAnalyticsWidget> {
   @override
   Widget build(BuildContext context) {
     final isPlank = widget.exercise.toLowerCase() == 'plank';
+    final effectiveFilter =
+        isPlank &&
+                (selectedFilter == GraphFilter.reps ||
+                    selectedFilter == GraphFilter.sets)
+            ? GraphFilter.duration
+            : selectedFilter;
 
     return Column(
       children: [
-        // Date picker
+        // Date picker (modern pill)
         Padding(
-          padding: const EdgeInsets.symmetric(vertical: 4),
+          padding: const EdgeInsets.symmetric(vertical: 6),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               Container(
                 padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 6,
+                  horizontal: 14,
+                  vertical: 10,
                 ),
                 decoration: BoxDecoration(
-                  color: Colors.blueGrey.shade50,
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: Colors.blueGrey.shade200),
-                ),
-                child: Text(
-                  DateFormat.yMMMMd().format(selectedDate),
-                  style: const TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.black87,
+                  gradient: LinearGradient(
+                    colors: [Colors.blueGrey.shade100, Colors.blueGrey.shade50],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
                   ),
+                  borderRadius: BorderRadius.circular(18),
+                  border: Border.all(color: Colors.blueGrey.shade200, width: 1),
+                  boxShadow: const [
+                    BoxShadow(
+                      color: Colors.black12,
+                      blurRadius: 6,
+                      offset: Offset(0, 2),
+                    ),
+                  ],
+                ),
+                child: Row(
+                  children: [
+                    const Icon(
+                      Icons.calendar_today,
+                      size: 16,
+                      color: Colors.blueGrey,
+                    ),
+                    const SizedBox(width: 8),
+                    RichText(
+                      text: TextSpan(
+                        style: const TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w700,
+                          color: Colors.black87,
+                        ),
+                        children: [
+                          TextSpan(
+                            text: DateFormat.MMMM().format(selectedDate),
+                            style: const TextStyle(fontSize: 19),
+                          ),
+                          TextSpan(
+                            text: ' ${DateFormat('d, y').format(selectedDate)}',
+                            style: const TextStyle(fontWeight: FontWeight.w600),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
                 ),
               ),
               const SizedBox(width: 8),
               IconButton(
                 icon: const Icon(
-                  Icons.calendar_today,
+                  Icons.edit_calendar,
                   color: Colors.blueGrey,
-                  size: 20,
+                  size: 22,
                 ),
                 onPressed: () => _pickDate(context),
+                tooltip: 'Pick date',
               ),
             ],
           ),
         ),
-        const SizedBox(height: 8),
+        const Divider(thickness: 1),
+
         isLoading
-            ? const Center(child: CircularProgressIndicator(strokeWidth: 2))
+            ? const Padding(
+              padding: EdgeInsets.symmetric(vertical: 24),
+              child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+            )
             : Padding(
               padding: const EdgeInsets.symmetric(horizontal: 12),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text(
+                  const SizedBox(height: 6),
+                  Text(
                     'Workout Totals',
                     style: TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.black87,
+                      fontSize: 18,
+                      fontWeight: FontWeight.w800,
+                      color: Colors.grey.shade900,
+                      letterSpacing: 0.2,
                     ),
                   ),
-                  const SizedBox(height: 8),
+                  const SizedBox(height: 10),
+
+                  // Totals cards
                   Row(
                     children: [
                       Expanded(
                         child: Card(
-                          elevation: 2,
+                          elevation: 3,
                           shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(10),
+                            borderRadius: BorderRadius.circular(14),
                           ),
                           color: Colors.green.shade50,
                           child: Padding(
-                            padding: const EdgeInsets.all(12),
+                            padding: const EdgeInsets.all(14),
                             child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text(
-                                  'Daily Totals',
-                                  style: TextStyle(
-                                    fontSize: 14,
-                                    fontWeight: FontWeight.bold,
-                                    color: Colors.green.shade800,
-                                  ),
+                                Row(
+                                  children: [
+                                    Icon(
+                                      Icons.today,
+                                      color: Colors.green.shade700,
+                                      size: 18,
+                                    ),
+                                    const SizedBox(width: 6),
+                                    Text(
+                                      'Daily Totals',
+                                      style: TextStyle(
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.w700,
+                                        color: Colors.green.shade800,
+                                      ),
+                                    ),
+                                  ],
                                 ),
+                                const SizedBox(height: 10),
                                 const Divider(thickness: 1, height: 12),
+                                const SizedBox(height: 6),
                                 Row(
                                   mainAxisAlignment:
                                       MainAxisAlignment.spaceAround,
@@ -285,27 +481,40 @@ class _WorkoutAnalyticsWidgetState extends State<WorkoutAnalyticsWidget> {
                           ),
                         ),
                       ),
-                      const SizedBox(width: 8),
+                      const SizedBox(width: 10),
                       Expanded(
                         child: Card(
-                          elevation: 2,
+                          elevation: 3,
                           shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(10),
+                            borderRadius: BorderRadius.circular(14),
                           ),
                           color: Colors.grey.shade50,
                           child: Padding(
-                            padding: const EdgeInsets.all(12),
+                            padding: const EdgeInsets.all(14),
                             child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text(
-                                  'Overall Totals',
-                                  style: const TextStyle(
-                                    fontSize: 14,
-                                    fontWeight: FontWeight.bold,
-                                    color: Colors.black87,
-                                  ),
+                                Row(
+                                  children: const [
+                                    Icon(
+                                      Icons.all_inclusive,
+                                      color: Colors.black54,
+                                      size: 18,
+                                    ),
+                                    SizedBox(width: 6),
+                                    Text(
+                                      'Overall Totals',
+                                      style: TextStyle(
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.w700,
+                                        color: Colors.black87,
+                                      ),
+                                    ),
+                                  ],
                                 ),
+                                const SizedBox(height: 10),
                                 const Divider(thickness: 1, height: 12),
+                                const SizedBox(height: 6),
                                 Row(
                                   mainAxisAlignment:
                                       MainAxisAlignment.spaceAround,
@@ -343,197 +552,472 @@ class _WorkoutAnalyticsWidgetState extends State<WorkoutAnalyticsWidget> {
                       ),
                     ],
                   ),
-                  const SizedBox(height: 16),
-                  // Graph Label + Filter
+
+                  const SizedBox(height: 10),
+                  const Divider(thickness: 1),
+                  const SizedBox(height: 8),
+
+                  // Graph header + filter
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      const Text(
+                      Text(
                         'Monthly Data',
                         style: TextStyle(
                           fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.black87,
+                          fontWeight: FontWeight.w800,
+                          color: Colors.grey.shade900,
                         ),
                       ),
+                      // Non-plank: Reps/Sets/Accuracy
                       if (!isPlank)
                         ToggleButtons(
                           isSelected: [
                             selectedFilter == GraphFilter.reps,
                             selectedFilter == GraphFilter.sets,
+                            selectedFilter == GraphFilter.accuracy,
                           ],
                           onPressed: (index) {
                             _changeFilter(
-                              index == 0 ? GraphFilter.reps : GraphFilter.sets,
+                              index == 0
+                                  ? GraphFilter.reps
+                                  : index == 1
+                                  ? GraphFilter.sets
+                                  : GraphFilter.accuracy,
                             );
                           },
-                          borderRadius: BorderRadius.circular(6),
+                          borderRadius: BorderRadius.circular(10),
                           selectedColor: Colors.white,
-                          fillColor: Colors.blue,
-                          color: Colors.blue,
+                          fillColor: Colors.blue.shade600,
+                          color: Colors.blue.shade700,
+                          borderColor: Colors.blue.shade200,
+                          selectedBorderColor: Colors.blue.shade600,
+                          constraints: const BoxConstraints(
+                            minHeight: 34,
+                            minWidth: 80,
+                          ),
                           children: const [
                             Padding(
                               padding: EdgeInsets.symmetric(
                                 horizontal: 10,
-                                vertical: 4,
+                                vertical: 6,
                               ),
                               child: Text(
                                 'Reps',
-                                style: TextStyle(fontSize: 12),
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                ),
                               ),
                             ),
                             Padding(
                               padding: EdgeInsets.symmetric(
                                 horizontal: 10,
-                                vertical: 4,
+                                vertical: 6,
                               ),
                               child: Text(
                                 'Sets',
-                                style: TextStyle(fontSize: 12),
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                            Padding(
+                              padding: EdgeInsets.symmetric(
+                                horizontal: 10,
+                                vertical: 6,
+                              ),
+                              child: Text(
+                                'Accuracy',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                          ],
+                        )
+                      else
+                        // Plank: Duration/Accuracy
+                        ToggleButtons(
+                          isSelected: [
+                            effectiveFilter == GraphFilter.duration,
+                            effectiveFilter == GraphFilter.accuracy,
+                          ],
+                          onPressed: (index) {
+                            _changeFilter(
+                              index == 0
+                                  ? GraphFilter.duration
+                                  : GraphFilter.accuracy,
+                            );
+                          },
+                          borderRadius: BorderRadius.circular(10),
+                          selectedColor: Colors.white,
+                          fillColor: Colors.blue.shade600,
+                          color: Colors.blue.shade700,
+                          borderColor: Colors.blue.shade200,
+                          selectedBorderColor: Colors.blue.shade600,
+                          constraints: const BoxConstraints(
+                            minHeight: 34,
+                            minWidth: 90,
+                          ),
+                          children: const [
+                            Padding(
+                              padding: EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 6,
+                              ),
+                              child: Text(
+                                'Duration',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                            Padding(
+                              padding: EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 6,
+                              ),
+                              child: Text(
+                                'Accuracy',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                ),
                               ),
                             ),
                           ],
                         ),
                     ],
                   ),
-                  const SizedBox(height: 8),
-                  SizedBox(
-                    height: 200,
-                    child:
-                        monthlySpots.isEmpty
-                            ? const Center(
-                              child: Text(
-                                'No data for this month',
-                                style: TextStyle(fontSize: 14),
-                              ),
-                            )
-                            : LineChart(
-                              LineChartData(
-                                minX: 1,
-                                maxX: 31,
-                                minY: 0,
-                                maxY: maxY.toDouble(),
-                                lineBarsData: [
-                                  LineChartBarData(
-                                    spots: monthlySpots,
-                                    isCurved: true,
-                                    color: Colors.blue,
-                                    barWidth: 2.5,
-                                    dotData: FlDotData(show: true),
-                                  ),
-                                ],
-                                titlesData: FlTitlesData(
-                                  bottomTitles: AxisTitles(
-                                    sideTitles: SideTitles(
-                                      showTitles: true,
-                                      reservedSize: 28,
-                                      interval:
-                                          1, // use 1, since we control which days to show
-                                      getTitlesWidget: (value, meta) {
-                                        // Only show days that exist in monthlySpots
-                                        final daysWithData =
-                                            monthlySpots
-                                                .map((e) => e.x.toInt())
-                                                .toSet();
-                                        if (!daysWithData.contains(
-                                          value.toInt(),
-                                        )) {
-                                          return const SizedBox();
-                                        }
-                                        return SideTitleWidget(
-                                          meta: meta,
-                                          child: Text(
-                                            value.toInt().toString(),
-                                            style: const TextStyle(
-                                              fontSize: 10,
-                                            ),
-                                          ),
-                                        );
-                                      },
-                                    ),
-                                  ),
 
-                                  leftTitles: AxisTitles(
-                                    sideTitles: SideTitles(
-                                      showTitles: true,
-                                      reservedSize: 50,
-                                      interval: 1,
-                                      getTitlesWidget: (value, meta) {
-                                        if (isPlank) {
-                                          const labels = [
-                                            '0',
-                                            '1-10 s',
-                                            '11-20',
-                                            '21-35',
-                                            '36-50',
-                                            '51-60',
-                                            '61-75',
-                                            '76-85',
-                                            '86-90',
-                                          ];
-                                          int index = value.toInt();
-                                          if (index < 0 ||
-                                              index >= labels.length) {
-                                            return const SizedBox();
-                                          }
-                                          return SideTitleWidget(
-                                            meta: meta,
-                                            child: Text(
-                                              labels[index],
-                                              style: const TextStyle(
-                                                fontSize: 10,
+                  const SizedBox(height: 10),
+
+                  // Chart wrapped in a Card
+                  Card(
+                    elevation: 3,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(10, 12, 12, 10),
+                      child: SizedBox(
+                        height: 220,
+                        child:
+                            monthlySpots.isEmpty
+                                ? const Center(
+                                  child: Text(
+                                    'No data for this month',
+                                    style: TextStyle(fontSize: 14),
+                                  ),
+                                )
+                                : LineChart(
+                                  LineChartData(
+                                    minX: 1,
+                                    maxX: 31,
+                                    minY: 0,
+                                    maxY: maxY.toDouble(),
+
+                                    // NEW: align tooltips to axis semantics
+                                    lineTouchData: LineTouchData(
+                                      enabled: true,
+                                      touchTooltipData: LineTouchTooltipData(
+                                        fitInsideHorizontally: true,
+                                        fitInsideVertically: true,
+                                        getTooltipItems: (touchedSpots) {
+                                          return touchedSpots.map((barSpot) {
+                                            final y = barSpot.y;
+                                            String txt;
+
+                                            if (isPlank) {
+                                              if (effectiveFilter ==
+                                                  GraphFilter.accuracy) {
+                                                txt =
+                                                    '${y.toStringAsFixed(0)}%';
+                                              } else {
+                                                // duration bucket labels
+                                                const labels = [
+                                                  '0s',
+                                                  '1s-10s',
+                                                  '11s-20s',
+                                                  '21s-35s',
+                                                  '36s-50s',
+                                                  '51s-60s',
+                                                  '61s-75s',
+                                                  '76s-85s',
+                                                  '86s-90s',
+                                                ];
+                                                final idx = y.round().clamp(
+                                                  0,
+                                                  labels.length - 1,
+                                                );
+                                                txt = labels[idx];
+                                              }
+                                            } else if (selectedFilter ==
+                                                GraphFilter.accuracy) {
+                                              txt = '${y.toStringAsFixed(0)}%';
+                                            } else if (selectedFilter ==
+                                                GraphFilter.sets) {
+                                              // sets bucket labels
+                                              const labels = [
+                                                '0-5',
+                                                '6-10',
+                                                '11-15',
+                                                '16-20',
+                                                '21-30',
+                                                '31-40',
+                                                '41-50',
+                                              ];
+                                              final idx = y.round().clamp(
+                                                0,
+                                                labels.length - 1,
+                                              );
+                                              txt = labels[idx];
+                                            } else {
+                                              // reps: raw number
+                                              txt = y.toStringAsFixed(0);
+                                            }
+
+                                            return LineTooltipItem(
+                                              txt,
+                                              const TextStyle(
+                                                color: Colors.white,
+                                                fontWeight: FontWeight.w600,
                                               ),
-                                            ),
-                                          );
-                                        } else {
-                                          const labels = [
-                                            '0',
-                                            '1-4',
-                                            '5-8',
-                                            '9-12',
-                                            '13-16',
-                                            '17-20',
-                                            '21-24',
-                                            '25-28',
-                                            '29-32',
-                                            '33-36',
-                                            '37-40',
-                                          ];
-                                          int index = value.toInt();
-                                          if (index < 0 ||
-                                              index >= labels.length) {
-                                            return const SizedBox();
-                                          }
-                                          return SideTitleWidget(
-                                            meta: meta,
-                                            child: Text(
-                                              labels[index],
-                                              style: const TextStyle(
-                                                fontSize: 10,
+                                            );
+                                          }).toList();
+                                        },
+                                      ),
+                                    ),
+
+                                    lineBarsData: [
+                                      LineChartBarData(
+                                        spots: monthlySpots,
+                                        isCurved: true,
+                                        color: Colors.blue.shade600,
+                                        barWidth: 2.6,
+                                        dotData: FlDotData(show: true),
+                                      ),
+                                    ],
+                                    titlesData: FlTitlesData(
+                                      bottomTitles: AxisTitles(
+                                        sideTitles: SideTitles(
+                                          showTitles: true,
+                                          reservedSize: 28,
+                                          interval: 1,
+                                          getTitlesWidget: (value, meta) {
+                                            // keep existing labels logic
+                                            final daysWithData =
+                                                monthlySpots
+                                                    .map((e) => e.x.toInt())
+                                                    .toSet();
+                                            if (!daysWithData.contains(
+                                              value.toInt(),
+                                            )) {
+                                              return const SizedBox();
+                                            }
+                                            return SideTitleWidget(
+                                              meta: meta,
+                                              child: Text(
+                                                value.toInt().toString(),
+                                                style: const TextStyle(
+                                                  fontSize: 10,
+                                                ),
                                               ),
-                                            ),
-                                          );
-                                        }
-                                      },
+                                            );
+                                          },
+                                        ),
+                                      ),
+                                      // keep ylabel logic unchanged
+                                      leftTitles: AxisTitles(
+                                        sideTitles: SideTitles(
+                                          showTitles: true,
+                                          reservedSize: 54,
+                                          interval: 1,
+                                          getTitlesWidget: (value, meta) {
+                                            if (isPlank) {
+                                              if (effectiveFilter ==
+                                                  GraphFilter.accuracy) {
+                                                final v = value.toInt();
+                                                const ticks = {
+                                                  0,
+                                                  20,
+                                                  40,
+                                                  60,
+                                                  80,
+                                                  100,
+                                                };
+                                                if (!ticks.contains(v)) {
+                                                  return const SizedBox();
+                                                }
+                                                return SideTitleWidget(
+                                                  meta: meta,
+                                                  child: Text(
+                                                    '$v%',
+                                                    style: const TextStyle(
+                                                      fontSize: 10,
+                                                    ),
+                                                  ),
+                                                );
+                                              } else {
+                                                const labels = [
+                                                  '0s',
+                                                  '1s-10s',
+                                                  '11s-20s',
+                                                  '21s-35s',
+                                                  '36s-50s',
+                                                  '51s-60s',
+                                                  '61s-75s',
+                                                  '76s-85s',
+                                                  '86s-90s',
+                                                ];
+                                                int index = value.toInt();
+                                                if (index < 0 ||
+                                                    index >= labels.length) {
+                                                  return const SizedBox();
+                                                }
+                                                return SideTitleWidget(
+                                                  meta: meta,
+                                                  child: Text(
+                                                    labels[index],
+                                                    style: const TextStyle(
+                                                      fontSize: 10,
+                                                    ),
+                                                  ),
+                                                );
+                                              }
+                                            } else if (selectedFilter ==
+                                                GraphFilter.accuracy) {
+                                              final v = value.toInt();
+                                              const ticks = {
+                                                0,
+                                                20,
+                                                40,
+                                                60,
+                                                80,
+                                                100,
+                                              };
+                                              if (!ticks.contains(v)) {
+                                                return const SizedBox();
+                                              }
+                                              return SideTitleWidget(
+                                                meta: meta,
+                                                child: Text(
+                                                  '$v%',
+                                                  style: const TextStyle(
+                                                    fontSize: 10,
+                                                  ),
+                                                ),
+                                              );
+                                            } else if (selectedFilter ==
+                                                GraphFilter.sets) {
+                                              const labels = [
+                                                '0-5',
+                                                '6-10',
+                                                '11-15',
+                                                '16-20',
+                                                '21-30',
+                                                '31-40',
+                                                '41-50',
+                                              ];
+                                              int index = value.toInt();
+                                              if (index < 0 ||
+                                                  index >= labels.length) {
+                                                return const SizedBox();
+                                              }
+                                              return SideTitleWidget(
+                                                meta: meta,
+                                                child: Text(
+                                                  labels[index],
+                                                  style: const TextStyle(
+                                                    fontSize: 10,
+                                                  ),
+                                                ),
+                                              );
+                                            } else {
+                                              const labels = [
+                                                '0',
+                                                '1-4',
+                                                '5-8',
+                                                '9-12',
+                                                '13-16',
+                                                '17-20',
+                                                '21-24',
+                                                '25-28',
+                                                '29-32',
+                                                '33-36',
+                                                '37-40',
+                                              ];
+                                              int index = value.toInt();
+                                              if (index < 0 ||
+                                                  index >= labels.length) {
+                                                return const SizedBox();
+                                              }
+                                              return SideTitleWidget(
+                                                meta: meta,
+                                                child: Text(
+                                                  labels[index],
+                                                  style: const TextStyle(
+                                                    fontSize: 10,
+                                                  ),
+                                                ),
+                                              );
+                                            }
+                                          },
+                                        ),
+                                      ),
+                                      topTitles: AxisTitles(
+                                        sideTitles: SideTitles(
+                                          showTitles: false,
+                                        ),
+                                      ),
+                                      rightTitles: AxisTitles(
+                                        sideTitles: SideTitles(
+                                          showTitles: false,
+                                        ),
+                                      ),
+                                    ),
+
+                                    // NEW: align horizontal grid with Y-axis labels
+                                    gridData: FlGridData(
+                                      show: true,
+                                      drawVerticalLine: true,
+                                      horizontalInterval:
+                                          isPlank
+                                              ? (effectiveFilter ==
+                                                      GraphFilter.accuracy
+                                                  ? 20
+                                                  : 1)
+                                              : (selectedFilter ==
+                                                      GraphFilter.accuracy
+                                                  ? 20
+                                                  : 1),
+                                      getDrawingHorizontalLine:
+                                          (v) => FlLine(
+                                            color: Colors.grey.shade200,
+                                            strokeWidth: 1,
+                                          ),
+                                      getDrawingVerticalLine:
+                                          (v) => FlLine(
+                                            color: Colors.grey.shade200,
+                                            strokeWidth: 1,
+                                          ),
+                                    ),
+
+                                    borderData: FlBorderData(
+                                      show: true,
+                                      border: Border.all(
+                                        color: Colors.black,
+                                        width: 1,
+                                      ),
                                     ),
                                   ),
-                                  topTitles: AxisTitles(
-                                    sideTitles: SideTitles(showTitles: false),
-                                  ),
-                                  rightTitles: AxisTitles(
-                                    sideTitles: SideTitles(showTitles: false),
-                                  ),
                                 ),
-                                gridData: FlGridData(show: true),
-                                borderData: FlBorderData(
-                                  show: true,
-                                  border: Border.all(
-                                    color: Colors.black,
-                                    width: 1,
-                                  ),
-                                ),
-                              ),
-                            ),
+                      ),
+                    ),
                   ),
                 ],
               ),
@@ -565,4 +1049,11 @@ class _WorkoutAnalyticsWidgetState extends State<WorkoutAnalyticsWidget> {
       ],
     );
   }
+}
+
+// NEW: helper function to compute form accuracy
+// Returns percentage; safe for attemptedReps == 0.
+double formAccuracy(int correctReps, int attemptedReps) {
+  if (attemptedReps <= 0) return 0.0;
+  return (correctReps / attemptedReps) * 100.0;
 }

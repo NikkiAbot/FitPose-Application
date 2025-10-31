@@ -49,6 +49,9 @@ class _SquatsState extends State<Squats> {
   String _state = 'waiting'; // waiting | down | up
   bool _anomaly = false;
 
+  // NEW: count all attempted reps (regardless of form)
+  int _attemptedReps = 0;
+
   // NEW: Sets/session tracking
   int _setsCount = 0;
   int _repsInCurrentSet = 0;
@@ -284,6 +287,11 @@ class _SquatsState extends State<Squats> {
       }
     } else if (_state == 'up') {
       if (_avgKnee! < downThresh) {
+        // NEW: count every attempt when a session is active
+        if (_sessionActive) {
+          _attemptedReps += 1;
+        }
+
         if (!_anomaly && _postureGood) {
           // Only increment when a session is active
           if (_sessionActive) {
@@ -417,6 +425,8 @@ class _SquatsState extends State<Squats> {
       _reps = 0;
       _setsCount = 0;
       _repsInCurrentSet = 0;
+      // NEW: reset attempted reps
+      _attemptedReps = 0;
     });
   }
 
@@ -443,6 +453,8 @@ class _SquatsState extends State<Squats> {
         'reps': _reps,
         'sets': _setsCount,
         'repsInCurrentSet': _repsInCurrentSet,
+        // NEW: persist attempted reps
+        'attemptedReps': _attemptedReps,
       };
       await firestore.collection('squat_sessions').add(doc);
       if (mounted) {

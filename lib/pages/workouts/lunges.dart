@@ -69,6 +69,10 @@ class _LungesState extends State<Lunges> {
   // New: store counter at session start so we can compute session-only reps
   int? _counterAtSessionStart;
 
+  // NEW: attempted reps tracking (total and session baseline)
+  int _attemptedReps = 0;
+  int? _attemptedAtSessionStart;
+
   // New: session timing state
   Timer? _sessionTimer;
   DateTime? _sessionStart;
@@ -163,6 +167,8 @@ class _LungesState extends State<Lunges> {
     _sessionStart = DateTime.now();
     _sessionElapsed = Duration.zero;
     _counterAtSessionStart = _counter; // capture starting counter
+    // NEW: capture attempted reps at session start
+    _attemptedAtSessionStart = _attemptedReps;
     _sessionTimer?.cancel();
     _sessionTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted) return;
@@ -212,6 +218,9 @@ class _LungesState extends State<Lunges> {
       final sessionSets = sessionReps ~/ _repsPerSet; // use 8-per-set rule
       final durationSeconds = _sessionElapsed.inSeconds;
       final userId = FirebaseAuth.instance.currentUser?.uid ?? 'anonymous';
+      // NEW: compute session attempted reps from baseline
+      final sessionAttemptedReps =
+          _attemptedReps - (_attemptedAtSessionStart ?? 0);
 
       final data = <String, dynamic>{
         'userId': userId,
@@ -220,6 +229,8 @@ class _LungesState extends State<Lunges> {
         'duration': durationSeconds,
         'duration_formatted': _formatDuration(_sessionElapsed),
         'timestamp': FieldValue.serverTimestamp(),
+        // NEW: persist attempted reps for this session
+        'attemptedReps': sessionAttemptedReps,
       };
 
       await FirebaseFirestore.instance.collection('lunges_sessions').add(data);
@@ -234,8 +245,10 @@ class _LungesState extends State<Lunges> {
         print(st);
       }
     } finally {
-      // clear counterAtSessionStart so next session is fresh
+      // clear baselines so next session is fresh
       _counterAtSessionStart = null;
+      // NEW: clear attempted baseline
+      _attemptedAtSessionStart = null;
     }
     return success;
   }
@@ -368,6 +381,8 @@ class _LungesState extends State<Lunges> {
         // Count rep when transitioning from mid/init to down
         if (_currentStage == 'mid' || _currentStage == 'init') {
           _counter += 1;
+          // NEW: count attempted rep regardless of form
+          _attemptedReps += 1;
         }
         _currentStage = 'down';
       }

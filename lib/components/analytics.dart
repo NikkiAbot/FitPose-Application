@@ -35,6 +35,8 @@ class _WorkoutAnalyticsWidgetState extends State<WorkoutAnalyticsWidget> {
 
   // Graph
   List<FlSpot> monthlySpots = [];
+  List<double> monthlyRawValues =
+      []; // NEW: raw values matching each spot (same order as monthlySpots)
   int maxY = 30;
   GraphFilter selectedFilter = GraphFilter.reps;
 
@@ -94,6 +96,9 @@ class _WorkoutAnalyticsWidgetState extends State<WorkoutAnalyticsWidget> {
             ? GraphFilter.duration
             : selectedFilter;
 
+    // NEW: collect the raw (unbucketed) y-value for each spot
+    final List<double> tempRawValues = [];
+
     for (var doc in querySnapshot.docs) {
       final data = doc.data();
       final tsField = data['timestamp'] as Timestamp?;
@@ -124,14 +129,20 @@ class _WorkoutAnalyticsWidgetState extends State<WorkoutAnalyticsWidget> {
           dar += attempts;
         }
 
-        // Graph: reps/sets (sets bucketed, reps raw)
+        // Graph: sets (sets bucketed, reps bucketed)
         if (date.year == selectedDate.year &&
             date.month == selectedDate.month) {
           double y;
           if (selectedFilter == GraphFilter.reps) {
-            y = reps.toDouble();
+            // Align reps to Y-axis buckets (0..10)
+            y = _getRepsYIndex(reps).toDouble();
+            // NEW: store raw reps for tooltip
+            tempRawValues.add(reps.toDouble());
           } else if (selectedFilter == GraphFilter.sets) {
+            // Align sets to Y-axis buckets (0..6)
             y = _getSetsYIndex(sets).toDouble();
+            // NEW: store raw sets for tooltip
+            tempRawValues.add(sets.toDouble());
           } else {
             y = sets.toDouble(); // not used; kept for completeness
           }
@@ -145,9 +156,11 @@ class _WorkoutAnalyticsWidgetState extends State<WorkoutAnalyticsWidget> {
         // Plank: duration + attemptedPlank
         if (date.year == selectedDate.year &&
             date.month == selectedDate.month) {
-          // duration (bucketed indices for duration view)
+          // Align duration to Y-axis buckets (0..8)
           int yIndex = _getPlankYIndex(duration);
           tempSpots.add(FlSpot(date.day.toDouble(), yIndex.toDouble()));
+          // NEW: store raw duration (seconds) for tooltip
+          tempRawValues.add(duration.toDouble());
           if (yIndex > tempMax) tempMax = yIndex;
 
           // NEW: accumulate per-day for accuracy = duration / attemptedPlank
@@ -199,17 +212,25 @@ class _WorkoutAnalyticsWidgetState extends State<WorkoutAnalyticsWidget> {
       dailyAttemptedReps = dar;
       totalAttemptedReps = tar;
 
-      // Select graph data
+      // Select graph data + raw values in the same order
       if (isPlank) {
-        monthlySpots =
-            effectiveFilter == GraphFilter.accuracy
-                ? tempPlankAccuracySpots // NEW: plank accuracy spots
-                : tempSpots; // duration buckets
+        if (effectiveFilter == GraphFilter.accuracy) {
+          monthlySpots = tempPlankAccuracySpots;
+          // NEW: for accuracy show percentage; raw equals the y of the spot
+          monthlyRawValues = tempPlankAccuracySpots.map((s) => s.y).toList();
+        } else {
+          monthlySpots = tempSpots;
+          monthlyRawValues = List<double>.from(tempRawValues);
+        }
       } else {
-        monthlySpots =
-            selectedFilter == GraphFilter.accuracy
-                ? tempAccuracySpots
-                : tempSpots;
+        if (selectedFilter == GraphFilter.accuracy) {
+          monthlySpots = tempAccuracySpots;
+          // NEW: for accuracy show percentage; raw equals the y of the spot
+          monthlyRawValues = tempAccuracySpots.map((s) => s.y).toList();
+        } else {
+          monthlySpots = tempSpots;
+          monthlyRawValues = List<double>.from(tempRawValues);
+        }
       }
 
       // Y-axis range per mode
@@ -224,9 +245,10 @@ class _WorkoutAnalyticsWidgetState extends State<WorkoutAnalyticsWidget> {
     });
   }
 
-  // Map actual duration in seconds to Y-axis index
+  // Replace helpers with integer bucket indices:
+
   int _getPlankYIndex(int seconds) {
-    if (seconds == 0) return 0;
+    if (seconds <= 0) return 0;
     if (seconds <= 10) return 1;
     if (seconds <= 20) return 2;
     if (seconds <= 35) return 3;
@@ -237,7 +259,6 @@ class _WorkoutAnalyticsWidgetState extends State<WorkoutAnalyticsWidget> {
     return 8;
   }
 
-  // NEW: Map sets count to Y-axis bucket index (0..6)
   int _getSetsYIndex(int sets) {
     if (sets <= 5) return 0; // 0-5
     if (sets <= 10) return 1; // 6-10
@@ -245,7 +266,21 @@ class _WorkoutAnalyticsWidgetState extends State<WorkoutAnalyticsWidget> {
     if (sets <= 20) return 3; // 16-20
     if (sets <= 30) return 4; // 21-30
     if (sets <= 40) return 5; // 31-40
-    return 6; // 41-50 (or more)
+    return 6; // 41-50+
+  }
+
+  int _getRepsYIndex(int reps) {
+    if (reps <= 0) return 0; // 0
+    if (reps <= 4) return 1; // 1-4
+    if (reps <= 8) return 2; // 5-8
+    if (reps <= 12) return 3; // 9-12
+    if (reps <= 16) return 4; // 13-16
+    if (reps <= 20) return 5; // 17-20
+    if (reps <= 24) return 6; // 21-24
+    if (reps <= 28) return 7; // 25-28
+    if (reps <= 32) return 8; // 29-32
+    if (reps <= 36) return 9; // 33-36
+    return 10; // 37-40+
   }
 
   bool _isSameDate(DateTime a, DateTime b) =>
@@ -702,56 +737,41 @@ class _WorkoutAnalyticsWidgetState extends State<WorkoutAnalyticsWidget> {
                                         fitInsideVertically: true,
                                         getTooltipItems: (touchedSpots) {
                                           return touchedSpots.map((barSpot) {
-                                            final y = barSpot.y;
+                                            final idx = barSpot.spotIndex.clamp(
+                                              0,
+                                              monthlyRawValues.length - 1,
+                                            );
+                                            final raw =
+                                                monthlyRawValues.isNotEmpty
+                                                    ? monthlyRawValues[idx]
+                                                    : barSpot.y;
                                             String txt;
 
                                             if (isPlank) {
                                               if (effectiveFilter ==
                                                   GraphFilter.accuracy) {
+                                                // accuracy: show percentage
                                                 txt =
-                                                    '${y.toStringAsFixed(0)}%';
+                                                    '${raw.toStringAsFixed(0)}%';
                                               } else {
-                                                // duration bucket labels
-                                                const labels = [
-                                                  '0s',
-                                                  '1s-10s',
-                                                  '11s-20s',
-                                                  '21s-35s',
-                                                  '36s-50s',
-                                                  '51s-60s',
-                                                  '61s-75s',
-                                                  '76s-85s',
-                                                  '86s-90s',
-                                                ];
-                                                final idx = y.round().clamp(
-                                                  0,
-                                                  labels.length - 1,
-                                                );
-                                                txt = labels[idx];
+                                                // duration: show seconds
+                                                txt =
+                                                    '${raw.toStringAsFixed(0)}s';
                                               }
-                                            } else if (selectedFilter ==
-                                                GraphFilter.accuracy) {
-                                              txt = '${y.toStringAsFixed(0)}%';
-                                            } else if (selectedFilter ==
-                                                GraphFilter.sets) {
-                                              // sets bucket labels
-                                              const labels = [
-                                                '0-5',
-                                                '6-10',
-                                                '11-15',
-                                                '16-20',
-                                                '21-30',
-                                                '31-40',
-                                                '41-50',
-                                              ];
-                                              final idx = y.round().clamp(
-                                                0,
-                                                labels.length - 1,
-                                              );
-                                              txt = labels[idx];
                                             } else {
-                                              // reps: raw number
-                                              txt = y.toStringAsFixed(0);
+                                              if (selectedFilter ==
+                                                  GraphFilter.accuracy) {
+                                                // accuracy: show percentage
+                                                txt =
+                                                    '${raw.toStringAsFixed(0)}%';
+                                              } else if (selectedFilter ==
+                                                  GraphFilter.sets) {
+                                                // sets: show raw sets count
+                                                txt = raw.toStringAsFixed(0);
+                                              } else {
+                                                // reps: show raw reps count
+                                                txt = raw.toStringAsFixed(0);
+                                              }
                                             }
 
                                             return LineTooltipItem(

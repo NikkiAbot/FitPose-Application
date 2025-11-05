@@ -789,10 +789,27 @@ class _WorkoutAnalyticsWidgetState extends State<WorkoutAnalyticsWidget> {
                                     lineBarsData: [
                                       LineChartBarData(
                                         spots: monthlySpots,
-                                        isCurved: true,
-                                        color: Colors.blue.shade600,
-                                        barWidth: 2.6,
-                                        dotData: FlDotData(show: true),
+                                        isCurved: false,
+                                        barWidth: 0, // hide line
+                                        color: Colors.transparent, // hide line
+                                        dotData: FlDotData(
+                                          show: true,
+                                          getDotPainter:
+                                              (
+                                                spot,
+                                                percent,
+                                                barData,
+                                                index,
+                                              ) => FlDotCirclePainter(
+                                                radius: 3,
+                                                color:
+                                                    Colors
+                                                        .blue
+                                                        .shade600, // visible dot color
+                                                strokeWidth: 0,
+                                                strokeColor: Colors.transparent,
+                                              ),
+                                        ),
                                       ),
                                     ],
                                     titlesData: FlTitlesData(

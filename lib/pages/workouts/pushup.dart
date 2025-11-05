@@ -466,199 +466,244 @@ class _PushUpState extends State<PushUp> {
     }
   }
 
+  // Add: confirm leaving if session is active
+  Future<bool> _confirmExitIfSessionActive() async {
+    if (!_sessionActive) return true;
+    final shouldExit = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder:
+          (_) => AlertDialog(
+            title: const Text('Unsaved Session'),
+            content: const Text(
+              'You have not yet ended the session, proceeding to exit the session without saving will lose all unsaved progress, do you wish to proceed?',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('No'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text('Yes'),
+              ),
+            ],
+          ),
+    );
+    return shouldExit ?? false;
+  }
+
   @override
   Widget build(BuildContext context) {
     final hudColor = _goodForm ? Colors.green : Colors.redAccent;
 
-    return Scaffold(
-      backgroundColor: Colors.black,
-      appBar: AppBar(
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back, color: Colors.grey, size: 26),
-          onPressed: () => Navigator.of(context).pop(),
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        _confirmExitIfSessionActive().then((canLeave) {
+          if (canLeave && mounted) {
+            // ignore: use_build_context_synchronously
+            Navigator.of(context).pop(result);
+          }
+        });
+      },
+      child: Scaffold(
+        backgroundColor: Colors.black,
+        appBar: AppBar(
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back, color: Colors.grey, size: 26),
+            onPressed: () async {
+              final canLeave = await _confirmExitIfSessionActive();
+              // ignore: use_build_context_synchronously
+              if (canLeave && mounted) Navigator.of(context).pop();
+            },
+          ),
         ),
-      ),
-      body:
-          _showCamera
-              ? Stack(
-                children: [
-                  CameraWidget(
-                    showCamera: _showCamera,
-                    onImage: _onCameraImage,
-                  ),
+        body:
+            _showCamera
+                ? Stack(
+                  children: [
+                    CameraWidget(
+                      showCamera: _showCamera,
+                      onImage: _onCameraImage,
+                    ),
 
-                  if (_latestPose != null &&
-                      _imageWidth != null &&
-                      _imageHeight != null)
-                    Positioned.fill(
-                      child: CustomPaint(
-                        painter: _PushUpPainter(
-                          pose: _latestPose!,
-                          imageWidth: _imageWidth!,
-                          imageHeight: _imageHeight!,
-                          postureGood: _goodForm,
-                          rotation: _rotation,
+                    if (_latestPose != null &&
+                        _imageWidth != null &&
+                        _imageHeight != null)
+                      Positioned.fill(
+                        child: CustomPaint(
+                          painter: _PushUpPainter(
+                            pose: _latestPose!,
+                            imageWidth: _imageWidth!,
+                            imageHeight: _imageHeight!,
+                            postureGood: _goodForm,
+                            rotation: _rotation,
+                          ),
                         ),
+                      ),
+
+                    // 🟢 Start / 🔴 End Controls — compact & bottom-centered
+                    Positioned(
+                      bottom: 125, // placed slightly above the HUD
+                      left: 0,
+                      right: 0,
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          ElevatedButton(
+                            onPressed: _sessionActive ? null : _startSession,
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.green.withValues(
+                                alpha: 0.25,
+                              ),
+                              foregroundColor: Colors.greenAccent,
+                              elevation: 0,
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 14,
+                                vertical: 6,
+                              ),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                            ),
+                            child: const Text(
+                              'Start',
+                              style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          ElevatedButton(
+                            onPressed: _sessionActive ? _endSession : null,
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.red.withValues(
+                                alpha: 0.25,
+                              ),
+                              foregroundColor: Colors.redAccent,
+                              elevation: 0,
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 14,
+                                vertical: 6,
+                              ),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                            ),
+                            child: const Text(
+                              'End',
+                              style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
 
-                  // 🟢 Start / 🔴 End Controls — compact & bottom-centered
-                  Positioned(
-                    bottom: 125, // placed slightly above the HUD
-                    left: 0,
-                    right: 0,
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        ElevatedButton(
-                          onPressed: _sessionActive ? null : _startSession,
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.green.withValues(
-                              alpha: 0.25,
-                            ),
-                            foregroundColor: Colors.greenAccent,
-                            elevation: 0,
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 14,
-                              vertical: 6,
-                            ),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(10),
-                            ),
-                          ),
-                          child: const Text(
-                            'Start',
-                            style: TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
+                    // HUD — compact layout with smaller font and tighter padding
+                    Positioned(
+                      bottom: 16,
+                      left: 12,
+                      right: 12,
+                      child: Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: Colors.black54,
+                          border: Border.all(color: hudColor, width: 1.5),
+                          borderRadius: BorderRadius.circular(10),
                         ),
-                        const SizedBox(width: 10),
-                        ElevatedButton(
-                          onPressed: _sessionActive ? _endSession : null,
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.red.withValues(alpha: 0.25),
-                            foregroundColor: Colors.redAccent,
-                            elevation: 0,
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 14,
-                              vertical: 6,
-                            ),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(10),
-                            ),
+                        child: DefaultTextStyle(
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 13,
                           ),
-                          child: const Text(
-                            'End',
-                            style: TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              // 🔹 LEFT SIDE — angles, duration, feedback
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      'Duration: $_formattedDuration',
+                                      style: const TextStyle(
+                                        fontSize: 14,
+                                        fontWeight: FontWeight.w600,
+                                        color: Colors.white70,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text('Right Elbow: $_elbowAngleDisplay°'),
+                                    Text('Torso: $_torsoAngleDisplay°'),
+                                    Text('Vertical: $_verticalMovementDisplay'),
+                                    const SizedBox(height: 3),
+                                    Text(
+                                      _feedback,
+                                      style: TextStyle(
+                                        color:
+                                            _goodForm
+                                                ? Colors.greenAccent
+                                                : Colors.orangeAccent,
+                                        fontWeight: FontWeight.w600,
+                                        fontSize: 13,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
 
-                  // HUD — compact layout with smaller font and tighter padding
-                  Positioned(
-                    bottom: 16,
-                    left: 12,
-                    right: 12,
-                    child: Container(
-                      padding: const EdgeInsets.all(8),
-                      decoration: BoxDecoration(
-                        color: Colors.black54,
-                        border: Border.all(color: hudColor, width: 1.5),
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      child: DefaultTextStyle(
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 13,
-                        ),
-                        child: Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            // 🔹 LEFT SIDE — angles, duration, feedback
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
+                              // 🔹 RIGHT SIDE — Reps and Sets
+                              Column(
+                                crossAxisAlignment: CrossAxisAlignment.center,
                                 children: [
-                                  Text(
-                                    'Duration: $_formattedDuration',
-                                    style: const TextStyle(
-                                      fontSize: 14,
-                                      fontWeight: FontWeight.w600,
+                                  const Text(
+                                    'Reps',
+                                    style: TextStyle(
+                                      fontSize: 15,
+                                      fontWeight: FontWeight.bold,
                                       color: Colors.white70,
                                     ),
                                   ),
-                                  const SizedBox(height: 4),
-                                  Text('Right Elbow: $_elbowAngleDisplay°'),
-                                  Text('Torso: $_torsoAngleDisplay°'),
-                                  Text('Vertical: $_verticalMovementDisplay'),
-                                  const SizedBox(height: 3),
                                   Text(
-                                    _feedback,
-                                    style: TextStyle(
-                                      color:
-                                          _goodForm
-                                              ? Colors.greenAccent
-                                              : Colors.orangeAccent,
-                                      fontWeight: FontWeight.w600,
-                                      fontSize: 13,
+                                    '$_pushUpCount', // total reps for the session
+                                    style: const TextStyle(
+                                      fontSize: 26,
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.white,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    'Sets: $_setCount', // remove " | Total: ..."
+                                    style: const TextStyle(
+                                      fontSize: 12,
+                                      color: Colors.white70,
                                     ),
                                   ),
                                 ],
                               ),
-                            ),
-
-                            // 🔹 RIGHT SIDE — Reps and Sets
-                            Column(
-                              crossAxisAlignment: CrossAxisAlignment.center,
-                              children: [
-                                const Text(
-                                  'Reps',
-                                  style: TextStyle(
-                                    fontSize: 15,
-                                    fontWeight: FontWeight.bold,
-                                    color: Colors.white70,
-                                  ),
-                                ),
-                                Text(
-                                  '$_pushUpCount', // total reps for the session
-                                  style: const TextStyle(
-                                    fontSize: 26,
-                                    fontWeight: FontWeight.bold,
-                                    color: Colors.white,
-                                  ),
-                                ),
-                                const SizedBox(height: 2),
-                                Text(
-                                  'Sets: $_setCount', // remove " | Total: ..."
-                                  style: const TextStyle(
-                                    fontSize: 12,
-                                    color: Colors.white70,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ],
+                            ],
+                          ),
                         ),
                       ),
                     ),
+                  ],
+                )
+                : const Center(
+                  child: Text(
+                    'Camera off',
+                    style: TextStyle(color: Colors.white),
                   ),
-                ],
-              )
-              : const Center(
-                child: Text(
-                  'Camera off',
-                  style: TextStyle(color: Colors.white),
                 ),
-              ),
+      ),
     );
   }
 }

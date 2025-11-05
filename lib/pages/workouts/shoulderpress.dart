@@ -765,380 +765,430 @@ class _ShoulderPressState extends State<ShoulderPress> {
     );
   }
 
+  Future<bool> _confirmExitIfSessionActive() async {
+    if (!_sessionActive) return true;
+    final shouldExit = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder:
+          (_) => AlertDialog(
+            title: const Text('Unsaved Session'),
+            content: const Text(
+              'You have not yet ended the session, proceeding to exit the session without saving will lose all unsaved progress, do you wish to proceed?',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('No'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text('Yes'),
+              ),
+            ],
+          ),
+    );
+    return shouldExit ?? false;
+  }
+
   @override
   Widget build(BuildContext context) {
     final hudColor = _postureGood ? Colors.green : Colors.redAccent;
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Shoulder Press'),
-        backgroundColor: Colors.black.withValues(alpha: 0.7),
-        foregroundColor: Colors.white,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.info_outline),
-            onPressed: _showInstructionsDialog,
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        _confirmExitIfSessionActive().then((canLeave) {
+          if (canLeave && mounted) {
+            // ignore: use_build_context_synchronously
+            Navigator.of(context).pop(result);
+          }
+        });
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('Shoulder Press'),
+          backgroundColor: Colors.black.withValues(alpha: 0.7),
+          foregroundColor: Colors.white,
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back),
+            onPressed: () async {
+              final canLeave = await _confirmExitIfSessionActive();
+              // ignore: use_build_context_synchronously
+              if (canLeave && mounted) Navigator.of(context).pop();
+            },
           ),
-        ],
-      ),
-      body:
-          _showCamera
-              ? Stack(
-                children: [
-                  // --- Camera view ---
-                  CameraWidget(
-                    showCamera: _showCamera,
-                    onImage: _onCameraImage,
-                  ),
-
-                  // --- Pose overlay painter ---
-                  if (_latestPose != null &&
-                      _imageWidth != null &&
-                      _imageHeight != null)
-                    Positioned.fill(
-                      child: CustomPaint(
-                        painter: _ShoulderPressPainter(
-                          pose: _latestPose!,
-                          imageWidth: _imageWidth!,
-                          imageHeight: _imageHeight!,
-                          leftElbow: _leftElbow,
-                          rightElbow: _rightElbow,
-                          avgElbow: _avgElbow,
-                          trunkAngle: _trunkAngle,
-                          postureGood: _postureGood,
-                          rotation: _rotation,
-                          mirror: false,
-                        ),
-                      ),
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.info_outline),
+              onPressed: _showInstructionsDialog,
+            ),
+          ],
+        ),
+        body:
+            _showCamera
+                ? Stack(
+                  children: [
+                    // --- Camera view ---
+                    CameraWidget(
+                      showCamera: _showCamera,
+                      onImage: _onCameraImage,
                     ),
 
-                  // --- Compact HUD ---
-                  Positioned(
-                    top: 12,
-                    left: 12,
-                    right: 12,
-                    child: Container(
-                      padding: const EdgeInsets.all(8),
-                      decoration: BoxDecoration(
-                        color: Colors.black.withValues(alpha: 0.45),
-                        border: Border.all(
-                          color: hudColor.withValues(alpha: 0.8),
-                          width: 1.2,
+                    // --- Pose overlay painter ---
+                    if (_latestPose != null &&
+                        _imageWidth != null &&
+                        _imageHeight != null)
+                      Positioned.fill(
+                        child: CustomPaint(
+                          painter: _ShoulderPressPainter(
+                            pose: _latestPose!,
+                            imageWidth: _imageWidth!,
+                            imageHeight: _imageHeight!,
+                            leftElbow: _leftElbow,
+                            rightElbow: _rightElbow,
+                            avgElbow: _avgElbow,
+                            trunkAngle: _trunkAngle,
+                            postureGood: _postureGood,
+                            rotation: _rotation,
+                            mirror: false,
+                          ),
                         ),
-                        borderRadius: BorderRadius.circular(10),
                       ),
-                      child: DefaultTextStyle(
-                        style: const TextStyle(color: Colors.white),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            // === TOP ROW: ML Form + Reps Box ===
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                // --- ML Form ---
-                                if (_classifierReady)
-                                  Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      const Text(
-                                        'ML Form',
-                                        style: TextStyle(
-                                          color: Colors.white70,
-                                          fontSize: 10,
-                                          fontWeight: FontWeight.w600,
+
+                    // --- Compact HUD ---
+                    Positioned(
+                      top: 12,
+                      left: 12,
+                      right: 12,
+                      child: Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.45),
+                          border: Border.all(
+                            color: hudColor.withValues(alpha: 0.8),
+                            width: 1.2,
+                          ),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: DefaultTextStyle(
+                          style: const TextStyle(color: Colors.white),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              // === TOP ROW: ML Form + Reps Box ===
+                              Row(
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceBetween,
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  // --- ML Form ---
+                                  if (_classifierReady)
+                                    Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        const Text(
+                                          'ML Form',
+                                          style: TextStyle(
+                                            color: Colors.white70,
+                                            fontSize: 10,
+                                            fontWeight: FontWeight.w600,
+                                          ),
                                         ),
-                                      ),
-                                      const SizedBox(height: 2),
-                                      Text(
-                                        _mlLabel,
-                                        style: TextStyle(
-                                          color:
-                                              _mlGoodForm
-                                                  ? Colors.greenAccent
-                                                  : Colors.orangeAccent,
-                                          fontWeight: FontWeight.bold,
-                                          fontSize: 15,
-                                        ),
-                                      ),
-                                      if (_mlConfidence > 0)
+                                        const SizedBox(height: 2),
                                         Text(
-                                          'Confidence: ${(_mlConfidence * 100).toStringAsFixed(1)}%',
+                                          _mlLabel,
+                                          style: TextStyle(
+                                            color:
+                                                _mlGoodForm
+                                                    ? Colors.greenAccent
+                                                    : Colors.orangeAccent,
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 15,
+                                          ),
+                                        ),
+                                        if (_mlConfidence > 0)
+                                          Text(
+                                            'Confidence: ${(_mlConfidence * 100).toStringAsFixed(1)}%',
+                                            style: const TextStyle(
+                                              color: Colors.white70,
+                                              fontSize: 9,
+                                              fontWeight: FontWeight.w400,
+                                            ),
+                                          ),
+                                      ],
+                                    ),
+
+                                  // --- Reps / Sets / Total box ---
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 10,
+                                      vertical: 6,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: Colors.black.withValues(
+                                        alpha: 0.6,
+                                      ),
+                                      borderRadius: BorderRadius.circular(8),
+                                      border: Border.all(
+                                        color: Colors.white24,
+                                        width: 1,
+                                      ),
+                                    ),
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.center,
+                                      children: [
+                                        const Text(
+                                          'Reps',
+                                          style: TextStyle(
+                                            color: Colors.white70,
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.w500,
+                                          ),
+                                        ),
+                                        Text(
+                                          '$_reps',
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 18,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                        // Removed the "Total" display; show only Sets
+                                        Text(
+                                          'Sets: $_setsCount',
                                           style: const TextStyle(
                                             color: Colors.white70,
                                             fontSize: 9,
                                             fontWeight: FontWeight.w400,
                                           ),
                                         ),
-                                    ],
-                                  ),
-
-                                // --- Reps / Sets / Total box ---
-                                Container(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 10,
-                                    vertical: 6,
-                                  ),
-                                  decoration: BoxDecoration(
-                                    color: Colors.black.withValues(alpha: 0.6),
-                                    borderRadius: BorderRadius.circular(8),
-                                    border: Border.all(
-                                      color: Colors.white24,
-                                      width: 1,
+                                      ],
                                     ),
                                   ),
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.center,
+                                ],
+                              ),
+
+                              const SizedBox(height: 6),
+                              const Divider(color: Colors.white24, height: 1),
+                              const SizedBox(height: 6),
+
+                              // === Posture Feedback ===
+                              Text(
+                                'Posture Status',
+                                style: const TextStyle(
+                                  color: Colors.white70,
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                              Text(
+                                _postureStatus,
+                                style: TextStyle(
+                                  color: hudColor,
+                                  fontWeight: FontWeight.w600,
+                                  fontSize: 12,
+                                ),
+                              ),
+                              Text(
+                                _feedback,
+                                style: TextStyle(
+                                  color:
+                                      _postureGood
+                                          ? Colors.greenAccent
+                                          : Colors.orangeAccent,
+                                  fontWeight: FontWeight.w500,
+                                  fontSize: 11,
+                                ),
+                              ),
+
+                              const SizedBox(height: 6),
+                              const Divider(color: Colors.white24, height: 1),
+                              const SizedBox(height: 6),
+
+                              // === Angles ===
+                              Wrap(
+                                spacing: 6,
+                                runSpacing: 2,
+                                children: [
+                                  if (_avgElbow != null)
+                                    Text(
+                                      'Avg Elbow: ${_avgElbow!.toStringAsFixed(0)}°',
+                                      style: const TextStyle(
+                                        fontSize: 10,
+                                        color: Colors.white70,
+                                      ),
+                                    ),
+                                  if (_leftElbow != null && _rightElbow != null)
+                                    Text(
+                                      'L/R: ${_leftElbow!.toStringAsFixed(0)}° / ${_rightElbow!.toStringAsFixed(0)}°',
+                                      style: const TextStyle(
+                                        fontSize: 10,
+                                        color: Colors.white70,
+                                      ),
+                                    ),
+                                  if (_trunkAngle != null)
+                                    Text(
+                                      'Trunk: ${_trunkAngle!.toStringAsFixed(0)}°',
+                                      style: const TextStyle(
+                                        fontSize: 10,
+                                        color: Colors.white70,
+                                      ),
+                                    ),
+                                ],
+                              ),
+
+                              const SizedBox(height: 6),
+                              const Divider(color: Colors.white24, height: 1),
+                              const SizedBox(height: 6),
+
+                              // === Session Info ===
+                              Row(
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Row(
                                     children: [
                                       const Text(
-                                        'Reps',
+                                        'Session:',
                                         style: TextStyle(
                                           color: Colors.white70,
-                                          fontSize: 11,
+                                          fontSize: 10,
                                           fontWeight: FontWeight.w500,
                                         ),
                                       ),
+                                      const SizedBox(width: 3),
                                       Text(
-                                        '$_reps',
-                                        style: const TextStyle(
-                                          color: Colors.white,
-                                          fontSize: 18,
-                                          fontWeight: FontWeight.bold,
-                                        ),
-                                      ),
-                                      // Removed the "Total" display; show only Sets
-                                      Text(
-                                        'Sets: $_setsCount',
-                                        style: const TextStyle(
-                                          color: Colors.white70,
-                                          fontSize: 9,
-                                          fontWeight: FontWeight.w400,
+                                        _sessionActive ? 'Running' : 'Stopped',
+                                        style: TextStyle(
+                                          color:
+                                              _sessionActive
+                                                  ? Colors.greenAccent
+                                                  : Colors.redAccent,
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.w600,
                                         ),
                                       ),
                                     ],
                                   ),
-                                ),
-                              ],
-                            ),
-
-                            const SizedBox(height: 6),
-                            const Divider(color: Colors.white24, height: 1),
-                            const SizedBox(height: 6),
-
-                            // === Posture Feedback ===
-                            Text(
-                              'Posture Status',
-                              style: const TextStyle(
-                                color: Colors.white70,
-                                fontSize: 10,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                            Text(
-                              _postureStatus,
-                              style: TextStyle(
-                                color: hudColor,
-                                fontWeight: FontWeight.w600,
-                                fontSize: 12,
-                              ),
-                            ),
-                            Text(
-                              _feedback,
-                              style: TextStyle(
-                                color:
-                                    _postureGood
-                                        ? Colors.greenAccent
-                                        : Colors.orangeAccent,
-                                fontWeight: FontWeight.w500,
-                                fontSize: 11,
-                              ),
-                            ),
-
-                            const SizedBox(height: 6),
-                            const Divider(color: Colors.white24, height: 1),
-                            const SizedBox(height: 6),
-
-                            // === Angles ===
-                            Wrap(
-                              spacing: 6,
-                              runSpacing: 2,
-                              children: [
-                                if (_avgElbow != null)
                                   Text(
-                                    'Avg Elbow: ${_avgElbow!.toStringAsFixed(0)}°',
+                                    _formattedDuration(_sessionElapsed),
                                     style: const TextStyle(
-                                      fontSize: 10,
-                                      color: Colors.white70,
+                                      color: Colors.white,
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.bold,
                                     ),
                                   ),
-                                if (_leftElbow != null && _rightElbow != null)
-                                  Text(
-                                    'L/R: ${_leftElbow!.toStringAsFixed(0)}° / ${_rightElbow!.toStringAsFixed(0)}°',
-                                    style: const TextStyle(
-                                      fontSize: 10,
-                                      color: Colors.white70,
-                                    ),
-                                  ),
-                                if (_trunkAngle != null)
-                                  Text(
-                                    'Trunk: ${_trunkAngle!.toStringAsFixed(0)}°',
-                                    style: const TextStyle(
-                                      fontSize: 10,
-                                      color: Colors.white70,
-                                    ),
-                                  ),
-                              ],
-                            ),
-
-                            const SizedBox(height: 6),
-                            const Divider(color: Colors.white24, height: 1),
-                            const SizedBox(height: 6),
-
-                            // === Session Info ===
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                              children: [
-                                Row(
-                                  children: [
-                                    const Text(
-                                      'Session:',
-                                      style: TextStyle(
-                                        color: Colors.white70,
-                                        fontSize: 10,
-                                        fontWeight: FontWeight.w500,
-                                      ),
-                                    ),
-                                    const SizedBox(width: 3),
-                                    Text(
-                                      _sessionActive ? 'Running' : 'Stopped',
-                                      style: TextStyle(
-                                        color:
-                                            _sessionActive
-                                                ? Colors.greenAccent
-                                                : Colors.redAccent,
-                                        fontSize: 10,
-                                        fontWeight: FontWeight.w600,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                                Text(
-                                  _formattedDuration(_sessionElapsed),
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ],
+                                ],
+                              ),
+                            ],
+                          ),
                         ),
                       ),
                     ),
-                  ),
 
-                  // === Start / End buttons (unchanged) ===
-                  Positioned(
-                    left: 16,
-                    right: 16,
-                    bottom: 20,
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        InkWell(
-                          onTap: _sessionActive ? null : _startSession,
-                          borderRadius: BorderRadius.circular(8),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 12,
-                              vertical: 6,
-                            ),
-                            decoration: BoxDecoration(
-                              color:
-                                  _sessionActive
-                                      ? Colors.green.withAlpha(20)
-                                      : Colors.green.withAlpha(60),
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: Row(
-                              children: [
-                                Icon(
-                                  Icons.play_arrow,
-                                  color:
-                                      _sessionActive
-                                          ? Colors.white70
-                                          : Colors.white,
-                                  size: 16,
-                                ),
-                                const SizedBox(width: 4),
-                                Text(
-                                  'Start',
-                                  style: TextStyle(
+                    // === Start / End buttons (unchanged) ===
+                    Positioned(
+                      left: 16,
+                      right: 16,
+                      bottom: 20,
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          InkWell(
+                            onTap: _sessionActive ? null : _startSession,
+                            borderRadius: BorderRadius.circular(8),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 6,
+                              ),
+                              decoration: BoxDecoration(
+                                color:
+                                    _sessionActive
+                                        ? Colors.green.withAlpha(20)
+                                        : Colors.green.withAlpha(60),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Row(
+                                children: [
+                                  Icon(
+                                    Icons.play_arrow,
                                     color:
                                         _sessionActive
                                             ? Colors.white70
                                             : Colors.white,
-                                    fontWeight: FontWeight.w600,
-                                    fontSize: 13,
+                                    size: 16,
                                   ),
-                                ),
-                              ],
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    'Start',
+                                    style: TextStyle(
+                                      color:
+                                          _sessionActive
+                                              ? Colors.white70
+                                              : Colors.white,
+                                      fontWeight: FontWeight.w600,
+                                      fontSize: 13,
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
                           ),
-                        ),
-                        const SizedBox(width: 8),
-                        InkWell(
-                          onTap: _sessionActive ? _endSession : null,
-                          borderRadius: BorderRadius.circular(8),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 12,
-                              vertical: 6,
-                            ),
-                            decoration: BoxDecoration(
-                              color:
-                                  _sessionActive
-                                      ? Colors.red.withAlpha(60)
-                                      : Colors.red.withAlpha(20),
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: Row(
-                              children: [
-                                Icon(
-                                  Icons.stop,
-                                  color:
-                                      _sessionActive
-                                          ? Colors.white
-                                          : Colors.white70,
-                                  size: 16,
-                                ),
-                                const SizedBox(width: 4),
-                                Text(
-                                  'End',
-                                  style: TextStyle(
+                          const SizedBox(width: 8),
+                          InkWell(
+                            onTap: _sessionActive ? _endSession : null,
+                            borderRadius: BorderRadius.circular(8),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 6,
+                              ),
+                              decoration: BoxDecoration(
+                                color:
+                                    _sessionActive
+                                        ? Colors.red.withAlpha(60)
+                                        : Colors.red.withAlpha(20),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Row(
+                                children: [
+                                  Icon(
+                                    Icons.stop,
                                     color:
                                         _sessionActive
                                             ? Colors.white
                                             : Colors.white70,
-                                    fontWeight: FontWeight.w600,
-                                    fontSize: 13,
+                                    size: 16,
                                   ),
-                                ),
-                              ],
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    'End',
+                                    style: TextStyle(
+                                      color:
+                                          _sessionActive
+                                              ? Colors.white
+                                              : Colors.white70,
+                                      fontWeight: FontWeight.w600,
+                                      fontSize: 13,
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
                           ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
-                  ),
-                ],
-              )
-              : const Center(child: Text('Camera off')),
+                  ],
+                )
+                : const Center(child: Text('Camera off')),
+      ),
     );
   }
 }

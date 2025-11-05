@@ -106,6 +106,9 @@ class _BicepCurlState extends State<BicepCurl> {
   // Requires: import 'package:firebase_auth/firebase_auth.dart';
   String? get _userId => FirebaseAuth.instance.currentUser?.uid;
 
+  // NEW: session active flag
+  bool _isSessionActive = false;
+
   @override
   void initState() {
     super.initState();
@@ -530,6 +533,7 @@ class _BicepCurlState extends State<BicepCurl> {
       _repsInCurrentSet = 0;
       // reset attempted reps for a fresh session
       _attemptedReps = 0;
+      _isSessionActive = true; // NEW: set session active flag
     });
   }
 
@@ -540,6 +544,7 @@ class _BicepCurlState extends State<BicepCurl> {
       _sessionTimer?.cancel();
       _sessionActive = false;
       _sessionElapsed = _sessionStopwatch.elapsed;
+      _isSessionActive = false; // NEW: clear session active flag
       // TODO: Persist session duration / reps if needed.
     });
 
@@ -585,6 +590,40 @@ class _BicepCurlState extends State<BicepCurl> {
     return '$minutes:$seconds';
   }
 
+  // NEW: back-navigation guard
+  Future<bool> _onWillPop() async {
+    if (!_isSessionActive) return true;
+
+    // Guard State.context before use
+    if (!mounted) return true;
+
+    final shouldExit =
+        await showDialog<bool>(
+          context: context,
+          barrierDismissible: false,
+          builder:
+              (context) => AlertDialog(
+                title: const Text('Unsaved session'),
+                content: const Text(
+                  'You have not yet ended the session, proceeding to exit the session without saving will lose all unsaved progress, do you wish to proceed?',
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(true),
+                    child: const Text('Yes'),
+                  ),
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(false),
+                    child: const Text('No'),
+                  ),
+                ],
+              ),
+        ) ??
+        false;
+
+    return shouldExit;
+  }
+
   // ═══════════════════════════════════════════════════════════════
   // UI BUILD METHOD (matching shoulder press styling)
   // ═══════════════════════════════════════════════════════════════
@@ -593,149 +632,96 @@ class _BicepCurlState extends State<BicepCurl> {
   Widget build(BuildContext context) {
     final hudColor = _postureGood ? Colors.green : Colors.redAccent;
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Bicep Curl'),
-        backgroundColor: Colors.black.withValues(alpha: 0.7),
-        foregroundColor: Colors.white,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.info_outline),
-            onPressed: _showInstructionsDialog,
-          ),
-        ],
-      ),
-      body:
-          _showCamera
-              ? Stack(
-                children: [
-                  // Camera view
-                  CameraWidget(
-                    showCamera: _showCamera,
-                    onImage: _onCameraImage,
-                  ),
-
-                  // Pose overlay painter
-                  if (_latestPose != null &&
-                      _imageWidth != null &&
-                      _imageHeight != null)
-                    Positioned.fill(
-                      child: CustomPaint(
-                        painter: _BicepCurlPainter(
-                          pose: _latestPose!,
-                          imageWidth: _imageWidth!,
-                          imageHeight: _imageHeight!,
-                          elbowAngle: _elbowAngle,
-                          torsoAngle: _torsoAngle,
-                          postureGood: _postureGood,
-                          rotation: _rotation,
-                          mirror: true,
-                        ),
-                      ),
+    return PopScope(
+      canPop: !_isSessionActive,
+      onPopInvokedWithResult: (didPop, result) async {
+        if (didPop) return;
+        if (_isSessionActive) {
+          final shouldExit = await _onWillPop();
+          if (shouldExit && mounted) {
+            // ignore: use_build_context_synchronously
+            Navigator.of(context).pop();
+          }
+        }
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('Bicep Curl'),
+          backgroundColor: Colors.black.withValues(alpha: 0.7),
+          foregroundColor: Colors.white,
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.info_outline),
+              onPressed: _showInstructionsDialog,
+            ),
+          ],
+        ),
+        body:
+            _showCamera
+                ? Stack(
+                  children: [
+                    // Camera view
+                    CameraWidget(
+                      showCamera: _showCamera,
+                      onImage: _onCameraImage,
                     ),
 
-                  // HUD container
-                  Positioned(
-                    top: 16,
-                    left: 16,
-                    right: 16,
-                    child: Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: Colors.black54,
-                        border: Border.all(color: hudColor, width: 2),
-                        borderRadius: BorderRadius.circular(12),
+                    // Pose overlay painter
+                    if (_latestPose != null &&
+                        _imageWidth != null &&
+                        _imageHeight != null)
+                      Positioned.fill(
+                        child: CustomPaint(
+                          painter: _BicepCurlPainter(
+                            pose: _latestPose!,
+                            imageWidth: _imageWidth!,
+                            imageHeight: _imageHeight!,
+                            elbowAngle: _elbowAngle,
+                            torsoAngle: _torsoAngle,
+                            postureGood: _postureGood,
+                            rotation: _rotation,
+                            mirror: true,
+                          ),
+                        ),
                       ),
-                      child: DefaultTextStyle(
-                        style: const TextStyle(color: Colors.white),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            // --- ML Form + Reps Row ---
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                // ML Form (left, no box)
-                                AnimatedOpacity(
-                                  opacity: _classifierReady ? 1.0 : 0.5,
-                                  duration: const Duration(milliseconds: 300),
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      const Text(
-                                        'ML Form',
-                                        style: TextStyle(
-                                          color: Colors.white70,
-                                          fontSize: 13,
-                                          fontWeight: FontWeight.w600,
-                                        ),
-                                      ),
-                                      AnimatedSwitcher(
-                                        duration: const Duration(
-                                          milliseconds: 300,
-                                        ),
-                                        transitionBuilder:
-                                            (child, anim) => FadeTransition(
-                                              opacity: anim,
-                                              child: child,
-                                            ),
-                                        child: Text(
-                                          _mlLabel.isNotEmpty
-                                              ? _mlLabel
-                                              : '...',
-                                          key: ValueKey(_mlLabel),
-                                          style: TextStyle(
-                                            color:
-                                                _mlLabel == 'good'
-                                                    ? Colors.greenAccent
-                                                    : Colors.orangeAccent,
-                                            fontWeight: FontWeight.bold,
-                                            fontSize: 24,
-                                          ),
-                                        ),
-                                      ),
-                                      if (_mlConfidence > 0)
-                                        Text(
-                                          'Confidence: ${(_mlConfidence * 100).toStringAsFixed(1)}%',
-                                          style: const TextStyle(
-                                            color: Colors.white70,
-                                            fontSize: 11,
-                                            fontWeight: FontWeight.w400,
-                                          ),
-                                        ),
-                                    ],
-                                  ),
-                                ),
 
-                                // --- Reps/Sets box ---
-                                AnimatedOpacity(
-                                  opacity: 1,
-                                  duration: const Duration(milliseconds: 400),
-                                  child: Container(
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 10,
-                                      vertical: 6,
-                                    ),
-                                    decoration: BoxDecoration(
-                                      color: Colors.black87,
-                                      borderRadius: BorderRadius.circular(8),
-                                      border: Border.all(
-                                        color: Colors.white24,
-                                        width: 1,
-                                      ),
-                                    ),
+                    // HUD container
+                    Positioned(
+                      top: 16,
+                      left: 16,
+                      right: 16,
+                      child: Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: Colors.black54,
+                          border: Border.all(color: hudColor, width: 2),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: DefaultTextStyle(
+                          style: const TextStyle(color: Colors.white),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              // --- ML Form + Reps Row ---
+                              Row(
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceBetween,
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  // ML Form (left, no box)
+                                  AnimatedOpacity(
+                                    opacity: _classifierReady ? 1.0 : 0.5,
+                                    duration: const Duration(milliseconds: 300),
                                     child: Column(
                                       crossAxisAlignment:
-                                          CrossAxisAlignment.center,
+                                          CrossAxisAlignment.start,
                                       children: [
                                         const Text(
-                                          'Reps',
+                                          'ML Form',
                                           style: TextStyle(
                                             color: Colors.white70,
-                                            fontSize: 12,
-                                            fontWeight: FontWeight.w500,
+                                            fontSize: 13,
+                                            fontWeight: FontWeight.w600,
                                           ),
                                         ),
                                         AnimatedSwitcher(
@@ -748,293 +734,364 @@ class _BicepCurlState extends State<BicepCurl> {
                                                 child: child,
                                               ),
                                           child: Text(
-                                            '$_curlReps',
-                                            key: ValueKey(_curlReps),
-                                            style: const TextStyle(
-                                              color: Colors.white,
-                                              fontSize: 24,
+                                            _mlLabel.isNotEmpty
+                                                ? _mlLabel
+                                                : '...',
+                                            key: ValueKey(_mlLabel),
+                                            style: TextStyle(
+                                              color:
+                                                  _mlLabel == 'good'
+                                                      ? Colors.greenAccent
+                                                      : Colors.orangeAccent,
                                               fontWeight: FontWeight.bold,
+                                              fontSize: 24,
                                             ),
                                           ),
                                         ),
-                                        const SizedBox(height: 2),
-                                        // Removed confusing "Total" display; show only Sets
+                                        if (_mlConfidence > 0)
+                                          Text(
+                                            'Confidence: ${(_mlConfidence * 100).toStringAsFixed(1)}%',
+                                            style: const TextStyle(
+                                              color: Colors.white70,
+                                              fontSize: 11,
+                                              fontWeight: FontWeight.w400,
+                                            ),
+                                          ),
+                                      ],
+                                    ),
+                                  ),
+
+                                  // --- Reps/Sets box ---
+                                  AnimatedOpacity(
+                                    opacity: 1,
+                                    duration: const Duration(milliseconds: 400),
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 10,
+                                        vertical: 6,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: Colors.black87,
+                                        borderRadius: BorderRadius.circular(8),
+                                        border: Border.all(
+                                          color: Colors.white24,
+                                          width: 1,
+                                        ),
+                                      ),
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.center,
+                                        children: [
+                                          const Text(
+                                            'Reps',
+                                            style: TextStyle(
+                                              color: Colors.white70,
+                                              fontSize: 12,
+                                              fontWeight: FontWeight.w500,
+                                            ),
+                                          ),
+                                          AnimatedSwitcher(
+                                            duration: const Duration(
+                                              milliseconds: 300,
+                                            ),
+                                            transitionBuilder:
+                                                (child, anim) => FadeTransition(
+                                                  opacity: anim,
+                                                  child: child,
+                                                ),
+                                            child: Text(
+                                              '$_curlReps',
+                                              key: ValueKey(_curlReps),
+                                              style: const TextStyle(
+                                                color: Colors.white,
+                                                fontSize: 24,
+                                                fontWeight: FontWeight.bold,
+                                              ),
+                                            ),
+                                          ),
+                                          const SizedBox(height: 2),
+                                          // Removed confusing "Total" display; show only Sets
+                                          Text(
+                                            'Sets: $_setsCount',
+                                            style: const TextStyle(
+                                              color: Colors.white70,
+                                              fontSize: 11,
+                                              fontWeight: FontWeight.w400,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+
+                              // ✅ Combined "State" and "Session" Row (aligned left)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 4),
+                                child: Row(
+                                  mainAxisAlignment:
+                                      MainAxisAlignment.spaceBetween,
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    // Left side: State + Session (grouped together)
+                                    Row(
+                                      children: [
+                                        const Text(
+                                          'State: ',
+                                          style: TextStyle(
+                                            color: Colors.white70,
+                                            fontSize: 13,
+                                            fontWeight: FontWeight.w500,
+                                          ),
+                                        ),
                                         Text(
-                                          'Sets: $_setsCount',
+                                          _fsmState,
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 15,
+                                          ),
+                                        ),
+                                        const SizedBox(width: 16),
+                                        Text(
+                                          'Session: ',
                                           style: const TextStyle(
                                             color: Colors.white70,
-                                            fontSize: 11,
-                                            fontWeight: FontWeight.w400,
+                                            fontSize: 13,
+                                            fontWeight: FontWeight.w500,
+                                          ),
+                                        ),
+                                        Text(
+                                          _sessionActive
+                                              ? 'Running'
+                                              : 'Stopped',
+                                          style: TextStyle(
+                                            color:
+                                                _sessionActive
+                                                    ? Colors.greenAccent
+                                                    : Colors.orangeAccent,
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 14,
                                           ),
                                         ),
                                       ],
                                     ),
-                                  ),
-                                ),
-                              ],
-                            ),
 
-                            // ✅ Combined "State" and "Session" Row (aligned left)
-                            Padding(
-                              padding: const EdgeInsets.only(top: 4),
-                              child: Row(
+                                    // Right side: session timer
+                                    Text(
+                                      _formattedDuration(_sessionElapsed),
+                                      style: TextStyle(
+                                        color:
+                                            _sessionActive
+                                                ? Colors.greenAccent
+                                                : Colors.white,
+                                        fontSize: 14,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+
+                              const SizedBox(height: 6),
+                              const Divider(color: Colors.white24, height: 12),
+
+                              // Posture + feedback + angles (right aligned vertically)
+                              Row(
                                 mainAxisAlignment:
                                     MainAxisAlignment.spaceBetween,
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  // Left side: State + Session (grouped together)
-                                  Row(
+                                  // Left side: posture + feedback
+                                  Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
                                     children: [
-                                      const Text(
-                                        'State: ',
+                                      Text(
+                                        _postureStatus,
                                         style: TextStyle(
-                                          color: Colors.white70,
+                                          color: hudColor,
+                                          fontWeight: FontWeight.w600,
                                           fontSize: 13,
-                                          fontWeight: FontWeight.w500,
                                         ),
                                       ),
+                                      const SizedBox(height: 4),
                                       Text(
-                                        _fsmState,
-                                        style: const TextStyle(
-                                          color: Colors.white,
-                                          fontWeight: FontWeight.bold,
-                                          fontSize: 15,
-                                        ),
-                                      ),
-                                      const SizedBox(width: 16),
-                                      Text(
-                                        'Session: ',
-                                        style: const TextStyle(
-                                          color: Colors.white70,
-                                          fontSize: 13,
-                                          fontWeight: FontWeight.w500,
-                                        ),
-                                      ),
-                                      Text(
-                                        _sessionActive ? 'Running' : 'Stopped',
+                                        _feedback,
                                         style: TextStyle(
                                           color:
-                                              _sessionActive
+                                              _postureGood
                                                   ? Colors.greenAccent
                                                   : Colors.orangeAccent,
-                                          fontWeight: FontWeight.bold,
-                                          fontSize: 14,
+                                          fontWeight: FontWeight.w600,
+                                          fontSize: 13,
                                         ),
                                       ),
                                     ],
                                   ),
 
-                                  // Right side: session timer
+                                  // Right side: angles (stacked vertically)
+                                  Column(
+                                    crossAxisAlignment: CrossAxisAlignment.end,
+                                    children: [
+                                      if (_elbowAngle != null)
+                                        Text(
+                                          'Elbow: ${_elbowAngle!.toStringAsFixed(0)}°',
+                                          style: const TextStyle(
+                                            fontSize: 13,
+                                            color: Color(
+                                              0xFFB3E5FC,
+                                            ), // pastel blue
+                                            fontWeight: FontWeight.w500,
+                                          ),
+                                        ),
+                                      if (_torsoAngle != null)
+                                        Text(
+                                          'Torso: ${_torsoAngle!.toStringAsFixed(0)}°',
+                                          style: const TextStyle(
+                                            fontSize: 13,
+                                            color: Color(
+                                              0xFFC8E6C9,
+                                            ), // pastel green
+                                            fontWeight: FontWeight.w500,
+                                          ),
+                                        ),
+                                      if (_dx != null)
+                                        Text(
+                                          'dx: ${_dx!.toStringAsFixed(3)}',
+                                          style: const TextStyle(
+                                            fontSize: 13,
+                                            color: Color(
+                                              0xFFFFF9C4,
+                                            ), // pastel yellow
+                                            fontWeight: FontWeight.w500,
+                                          ),
+                                        ),
+                                    ],
+                                  ),
+                                ],
+                              ),
+
+                              const SizedBox(height: 8),
+
+                              // Instruction if active
+                              if (_instruction != 'neutral') ...[
+                                Text(
+                                  _instruction,
+                                  style: const TextStyle(
+                                    color: Colors.yellowAccent,
+                                    fontSize: 12,
+                                    fontStyle: FontStyle.italic,
+                                  ),
+                                ),
+                              ],
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+
+                    // Bottom session controls (unchanged)
+                    Positioned(
+                      left: 16,
+                      right: 16,
+                      bottom: 22,
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          // Start button
+                          InkWell(
+                            onTap: _sessionActive ? null : _startSession,
+                            borderRadius: BorderRadius.circular(8),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 8,
+                              ),
+                              decoration: BoxDecoration(
+                                color:
+                                    _sessionActive
+                                        ? Colors.green.withValues(alpha: 0.08)
+                                        : Colors.green.withValues(alpha: 0.18),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Row(
+                                children: [
+                                  Icon(
+                                    Icons.play_arrow,
+                                    color:
+                                        _sessionActive
+                                            ? Colors.white70
+                                            : Colors.white,
+                                    size: 18,
+                                  ),
+                                  const SizedBox(width: 6),
                                   Text(
-                                    _formattedDuration(_sessionElapsed),
+                                    'Start',
                                     style: TextStyle(
                                       color:
                                           _sessionActive
-                                              ? Colors.greenAccent
+                                              ? Colors.white70
                                               : Colors.white,
+                                      fontWeight: FontWeight.w600,
                                       fontSize: 14,
-                                      fontWeight: FontWeight.bold,
                                     ),
                                   ),
                                 ],
                               ),
                             ),
-
-                            const SizedBox(height: 6),
-                            const Divider(color: Colors.white24, height: 12),
-
-                            // Posture + feedback + angles (right aligned vertically)
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                // Left side: posture + feedback
-                                Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      _postureStatus,
-                                      style: TextStyle(
-                                        color: hudColor,
-                                        fontWeight: FontWeight.w600,
-                                        fontSize: 13,
-                                      ),
-                                    ),
-                                    const SizedBox(height: 4),
-                                    Text(
-                                      _feedback,
-                                      style: TextStyle(
-                                        color:
-                                            _postureGood
-                                                ? Colors.greenAccent
-                                                : Colors.orangeAccent,
-                                        fontWeight: FontWeight.w600,
-                                        fontSize: 13,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-
-                                // Right side: angles (stacked vertically)
-                                Column(
-                                  crossAxisAlignment: CrossAxisAlignment.end,
-                                  children: [
-                                    if (_elbowAngle != null)
-                                      Text(
-                                        'Elbow: ${_elbowAngle!.toStringAsFixed(0)}°',
-                                        style: const TextStyle(
-                                          fontSize: 13,
-                                          color: Color(
-                                            0xFFB3E5FC,
-                                          ), // pastel blue
-                                          fontWeight: FontWeight.w500,
-                                        ),
-                                      ),
-                                    if (_torsoAngle != null)
-                                      Text(
-                                        'Torso: ${_torsoAngle!.toStringAsFixed(0)}°',
-                                        style: const TextStyle(
-                                          fontSize: 13,
-                                          color: Color(
-                                            0xFFC8E6C9,
-                                          ), // pastel green
-                                          fontWeight: FontWeight.w500,
-                                        ),
-                                      ),
-                                    if (_dx != null)
-                                      Text(
-                                        'dx: ${_dx!.toStringAsFixed(3)}',
-                                        style: const TextStyle(
-                                          fontSize: 13,
-                                          color: Color(
-                                            0xFFFFF9C4,
-                                          ), // pastel yellow
-                                          fontWeight: FontWeight.w500,
-                                        ),
-                                      ),
-                                  ],
-                                ),
-                              ],
-                            ),
-
-                            const SizedBox(height: 8),
-
-                            // Instruction if active
-                            if (_instruction != 'neutral') ...[
-                              Text(
-                                _instruction,
-                                style: const TextStyle(
-                                  color: Colors.yellowAccent,
-                                  fontSize: 12,
-                                  fontStyle: FontStyle.italic,
-                                ),
-                              ),
-                            ],
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-
-                  // Bottom session controls (unchanged)
-                  Positioned(
-                    left: 16,
-                    right: 16,
-                    bottom: 22,
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        // Start button
-                        InkWell(
-                          onTap: _sessionActive ? null : _startSession,
-                          borderRadius: BorderRadius.circular(8),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 12,
-                              vertical: 8,
-                            ),
-                            decoration: BoxDecoration(
-                              color:
-                                  _sessionActive
-                                      ? Colors.green.withValues(alpha: 0.08)
-                                      : Colors.green.withValues(alpha: 0.18),
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: Row(
-                              children: [
-                                Icon(
-                                  Icons.play_arrow,
-                                  color:
-                                      _sessionActive
-                                          ? Colors.white70
-                                          : Colors.white,
-                                  size: 18,
-                                ),
-                                const SizedBox(width: 6),
-                                Text(
-                                  'Start',
-                                  style: TextStyle(
-                                    color:
-                                        _sessionActive
-                                            ? Colors.white70
-                                            : Colors.white,
-                                    fontWeight: FontWeight.w600,
-                                    fontSize: 14,
-                                  ),
-                                ),
-                              ],
-                            ),
                           ),
-                        ),
-                        const SizedBox(width: 10),
-                        // End button
-                        InkWell(
-                          onTap: _sessionActive ? _endSession : null,
-                          borderRadius: BorderRadius.circular(8),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 12,
-                              vertical: 8,
-                            ),
-                            decoration: BoxDecoration(
-                              color:
-                                  _sessionActive
-                                      ? Colors.red.withValues(alpha: 0.18)
-                                      : Colors.red.withValues(alpha: 0.06),
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: Row(
-                              children: [
-                                Icon(
-                                  Icons.stop,
-                                  color:
-                                      _sessionActive
-                                          ? Colors.white
-                                          : Colors.white70,
-                                  size: 18,
-                                ),
-                                const SizedBox(width: 6),
-                                Text(
-                                  'End',
-                                  style: TextStyle(
+                          const SizedBox(width: 10),
+                          // End button
+                          InkWell(
+                            onTap: _sessionActive ? _endSession : null,
+                            borderRadius: BorderRadius.circular(8),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 8,
+                              ),
+                              decoration: BoxDecoration(
+                                color:
+                                    _sessionActive
+                                        ? Colors.red.withValues(alpha: 0.18)
+                                        : Colors.red.withValues(alpha: 0.06),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Row(
+                                children: [
+                                  Icon(
+                                    Icons.stop,
                                     color:
                                         _sessionActive
                                             ? Colors.white
                                             : Colors.white70,
-                                    fontWeight: FontWeight.w600,
-                                    fontSize: 14,
+                                    size: 18,
                                   ),
-                                ),
-                              ],
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    'End',
+                                    style: TextStyle(
+                                      color:
+                                          _sessionActive
+                                              ? Colors.white
+                                              : Colors.white70,
+                                      fontWeight: FontWeight.w600,
+                                      fontSize: 14,
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
                           ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
-                  ),
-                ],
-              )
-              : const Center(child: Text('Camera off')),
+                  ],
+                )
+                : const Center(child: Text('Camera off')),
+      ),
     );
   }
 
@@ -1043,6 +1100,9 @@ class _BicepCurlState extends State<BicepCurl> {
   // ═══════════════════════════════════════════════════════════════
 
   void _showInstructionsDialog() {
+    // Guard State.context use
+    if (!mounted) return;
+
     showDialog(
       context: context,
       barrierDismissible: false,

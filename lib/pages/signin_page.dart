@@ -107,201 +107,207 @@ class _SignInPageState extends State<SignInPage> {
             fit: BoxFit.cover,
           ),
         ),
-        child: Center(
-          child: Column(
-            children: [
-              const SizedBox(height: 50),
-              Image.asset('lib/images/Logo2.png', width: 100, height: 100),
-              Padding(
-                padding: const EdgeInsets.only(top: 5),
-                child: Text(
-                  'FitPose',
+        // CHANGED: make content scrollable
+        child: SingleChildScrollView(
+          physics: const BouncingScrollPhysics(),
+          padding: const EdgeInsets.only(bottom: 30),
+          child: Center(
+            child: Column(
+              children: [
+                const SizedBox(height: 50),
+                Image.asset('lib/images/Logo2.png', width: 100, height: 100),
+                Padding(
+                  padding: const EdgeInsets.only(top: 5),
+                  child: Text(
+                    'FitPose',
+                    style: GoogleFonts.poppins(
+                      color: Colors.white,
+                      fontSize: 60,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                Text(
+                  'Sign in to continue',
                   style: GoogleFonts.poppins(
                     color: Colors.white,
-                    fontSize: 60,
-                    fontWeight: FontWeight.w700,
+                    fontSize: 18,
+                    fontWeight: FontWeight.w300,
                   ),
                 ),
-              ),
-              Text(
-                'Sign in to continue',
-                style: GoogleFonts.poppins(
-                  color: Colors.white,
-                  fontSize: 18,
-                  fontWeight: FontWeight.w300,
+                const SizedBox(height: 20),
+
+                // Username
+                TextWidget(
+                  controller: usernameController,
+                  hintText: 'Username',
+                  obscureText: false,
                 ),
-              ),
-              const SizedBox(height: 20),
 
-              // Username
-              TextWidget(
-                controller: usernameController,
-                hintText: 'Username',
-                obscureText: false,
-              ),
+                const SizedBox(height: 20),
 
-              const SizedBox(height: 20),
+                // Email
+                TextWidget(
+                  controller: emailController,
+                  hintText: 'Email',
+                  obscureText: false,
+                ),
 
-              // Email
-              TextWidget(
-                controller: emailController,
-                hintText: 'Email',
-                obscureText: false,
-              ),
+                const SizedBox(height: 20),
 
-              const SizedBox(height: 20),
+                // Password
+                TextWidget(
+                  controller: passwordController,
+                  hintText: 'Password',
+                  obscureText: true,
+                ),
 
-              // Password
-              TextWidget(
-                controller: passwordController,
-                hintText: 'Password',
-                obscureText: true,
-              ),
+                const SizedBox(height: 20),
 
-              const SizedBox(height: 20),
+                // Confirm Password
+                TextWidget(
+                  controller: confirmpasswordController,
+                  hintText: 'Confirm Password',
+                  obscureText: true,
+                ),
 
-              // Confirm Password
-              TextWidget(
-                controller: confirmpasswordController,
-                hintText: 'Confirm Password',
-                obscureText: true,
-              ),
+                const SizedBox(height: 20),
 
-              const SizedBox(height: 20),
-
-              // Terms of Service and Privacy Policy
-              Padding(
-                padding: const EdgeInsets.only(left: 20),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Checkbox(
-                      value: isChecked,
-                      onChanged: (value) {
-                        setState(() {
-                          isChecked = value!;
-                        });
-                      },
-                      activeColor: const Color.fromARGB(255, 66, 164, 244),
-                    ),
-                    Flexible(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          RichText(
-                            text: TextSpan(
-                              text: 'By signing up, you agree to Fitpose\'s ',
-                              style: GoogleFonts.poppins(
-                                color: Colors.white,
-                                fontSize: 14,
-                                fontWeight: FontWeight.w300,
-                              ),
-                              children: [
-                                TextSpan(
-                                  text: 'Terms of Service',
-                                  style: GoogleFonts.poppins(
-                                    color: const Color.fromARGB(
-                                      255,
-                                      66,
-                                      164,
-                                      244,
-                                    ),
-                                    fontSize: 14,
-                                    decoration: TextDecoration.underline,
-                                  ),
-                                  recognizer:
-                                      TapGestureRecognizer()
-                                        ..onTap = () {
-                                          Navigator.push(
-                                            context,
-                                            MaterialPageRoute(
-                                              builder:
-                                                  (_) => const TermsOfUsePage(),
-                                            ),
-                                          );
-                                        },
-                                ),
-                                TextSpan(
-                                  text: ' and ',
-                                  style: GoogleFonts.poppins(
-                                    color: Colors.white,
-                                    fontSize: 14,
-                                  ),
-                                ),
-                                TextSpan(
-                                  text: 'Privacy Policy',
-                                  style: GoogleFonts.poppins(
-                                    color: const Color.fromARGB(
-                                      255,
-                                      66,
-                                      164,
-                                      244,
-                                    ),
-                                    fontSize: 14,
-                                    decoration: TextDecoration.underline,
-                                  ),
-                                  recognizer:
-                                      TapGestureRecognizer()
-                                        ..onTap = () {
-                                          Navigator.push(
-                                            context,
-                                            MaterialPageRoute(
-                                              builder:
-                                                  (_) =>
-                                                      const PrivacyPolicyPage(),
-                                            ),
-                                          );
-                                        },
-                                ),
-                                TextSpan(
-                                  text: '.',
-                                  style: GoogleFonts.poppins(
-                                    color: Colors.white,
-                                    fontSize: 14,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
+                // Terms of Service and Privacy Policy
+                Padding(
+                  padding: const EdgeInsets.only(left: 20),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Checkbox(
+                        value: isChecked,
+                        onChanged: (value) {
+                          setState(() {
+                            isChecked = value!;
+                          });
+                        },
+                        activeColor: const Color.fromARGB(255, 66, 164, 244),
                       ),
-                    ),
-                  ],
-                ),
-              ),
-
-              // End of Terms of Service and Privacy Policy
-              const SizedBox(height: 10),
-
-              // Sign Up Button
-              LoginButton(text: "Sign In", onTap: signUserUp),
-
-              const SizedBox(height: 10),
-
-              Text(
-                'Already have an account?',
-                style: GoogleFonts.poppins(
-                  color: Colors.white,
-                  fontSize: 14,
-                  fontWeight: FontWeight.w300,
-                ),
-              ),
-
-              GestureDetector(
-                onTap: widget.onTap,
-                child: Text(
-                  'Sign Up',
-                  style: GoogleFonts.poppins(
-                    color: const Color.fromARGB(255, 66, 164, 244),
-                    fontSize: 14,
-                    decoration: TextDecoration.underline,
-                    decorationColor: Color.fromARGB(255, 66, 164, 244),
+                      Flexible(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            RichText(
+                              text: TextSpan(
+                                text: 'By signing up, you agree to Fitpose\'s ',
+                                style: GoogleFonts.poppins(
+                                  color: Colors.white,
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w300,
+                                ),
+                                children: [
+                                  TextSpan(
+                                    text: 'Terms of Service',
+                                    style: GoogleFonts.poppins(
+                                      color: const Color.fromARGB(
+                                        255,
+                                        66,
+                                        164,
+                                        244,
+                                      ),
+                                      fontSize: 14,
+                                      decoration: TextDecoration.underline,
+                                    ),
+                                    recognizer:
+                                        TapGestureRecognizer()
+                                          ..onTap = () {
+                                            Navigator.push(
+                                              context,
+                                              MaterialPageRoute(
+                                                builder:
+                                                    (_) =>
+                                                        const TermsOfUsePage(),
+                                              ),
+                                            );
+                                          },
+                                  ),
+                                  TextSpan(
+                                    text: ' and ',
+                                    style: GoogleFonts.poppins(
+                                      color: Colors.white,
+                                      fontSize: 14,
+                                    ),
+                                  ),
+                                  TextSpan(
+                                    text: 'Privacy Policy',
+                                    style: GoogleFonts.poppins(
+                                      color: const Color.fromARGB(
+                                        255,
+                                        66,
+                                        164,
+                                        244,
+                                      ),
+                                      fontSize: 14,
+                                      decoration: TextDecoration.underline,
+                                    ),
+                                    recognizer:
+                                        TapGestureRecognizer()
+                                          ..onTap = () {
+                                            Navigator.push(
+                                              context,
+                                              MaterialPageRoute(
+                                                builder:
+                                                    (_) =>
+                                                        const PrivacyPolicyPage(),
+                                              ),
+                                            );
+                                          },
+                                  ),
+                                  TextSpan(
+                                    text: '.',
+                                    style: GoogleFonts.poppins(
+                                      color: Colors.white,
+                                      fontSize: 14,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
                   ),
                 ),
-              ),
 
-              const SizedBox(height: 30),
-            ],
+                // End of Terms of Service and Privacy Policy
+                const SizedBox(height: 10),
+
+                // Sign Up Button
+                LoginButton(text: "Sign In", onTap: signUserUp),
+
+                const SizedBox(height: 10),
+
+                Text(
+                  'Already have an account?',
+                  style: GoogleFonts.poppins(
+                    color: Colors.white,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w300,
+                  ),
+                ),
+
+                GestureDetector(
+                  onTap: widget.onTap,
+                  child: Text(
+                    'Sign Up',
+                    style: GoogleFonts.poppins(
+                      color: const Color.fromARGB(255, 66, 164, 244),
+                      fontSize: 14,
+                      decoration: TextDecoration.underline,
+                      decorationColor: Color.fromARGB(255, 66, 164, 244),
+                    ),
+                  ),
+                ),
+
+                const SizedBox(height: 30),
+              ],
+            ),
           ),
         ),
       ),

@@ -10,8 +10,6 @@ import 'package:firebase_auth/firebase_auth.dart';
 
 import '../../components/camera_widget.dart';
 import '../../models/lunges_feature_extract.dart';
-import '../../models/lunges_stage_classifier.dart';
-import '../../models/lunges_error_classifier.dart';
 
 class Lunges extends StatefulWidget {
   const Lunges({super.key});
@@ -48,16 +46,12 @@ class _LungesState extends State<Lunges> {
   int? _imageHeight;
 
   // ═══════════════════════════════════════════════════════════════
-  // CLASSIFIERS
+  // CLASSIFIERS (Not used - using rule-based detection instead)
   // ═══════════════════════════════════════════════════════════════
-  final LungesStageClassifier _stageClassifier = LungesStageClassifier();
-  final LungesErrorClassifier _errorClassifier = LungesErrorClassifier();
-  bool _classifiersReady = false;
-  bool _initializationAttempted = false;
-  String _initializationStatus = 'Not started';
+  // Kept for potential future use, but not initialized
 
   // ═══════════════════════════════════════════════════════════════
-  // STATE TRACKING (matching Python logic)
+  // STATE TRACKING
   // ═══════════════════════════════════════════════════════════════
   String _currentStage = ''; // 'init', 'mid', 'down'
   int _counter = 0;
@@ -79,9 +73,11 @@ class _LungesState extends State<Lunges> {
   Duration _sessionElapsed = Duration.zero;
   bool _sessionActive = false;
 
-  // Thresholds (matching Python)
-  static const double predictionProbabilityThreshold = 0.8;
-  static const List<double> angleThresholds = [60.0, 135.0];
+  // Thresholds
+  static const List<double> angleThresholds = [
+    60.0,
+    135.0,
+  ]; // Knee angle limits
 
   // Knee angle analysis results
   Map<String, dynamic>? _kneeAnalysis;
@@ -100,63 +96,16 @@ class _LungesState extends State<Lunges> {
   void initState() {
     super.initState();
     debugPrint('═══════════════════════════════════════════');
-    debugPrint('[Lunges] 🚀 INIT STATE CALLED');
+    debugPrint('[Lunges] 🚀 INIT STATE CALLED - RULE-BASED MODE');
     debugPrint('═══════════════════════════════════════════');
-    _initializeClassifiers();
     WidgetsBinding.instance.addPostFrameCallback(
       (_) => _showInstructionsDialog(),
     );
   }
 
-  Future<void> _initializeClassifiers() async {
-    debugPrint('[Lunges] 📦 _initializeClassifiers() ENTERED');
-
-    setState(() {
-      _initializationAttempted = true;
-      _initializationStatus = 'Loading...';
-    });
-
-    try {
-      debugPrint('[Lunges] Starting classifier initialization...');
-
-      await Future.wait([
-        _stageClassifier.initialize(),
-        _errorClassifier.initialize(),
-      ]);
-
-      if (mounted) {
-        setState(() {
-          _classifiersReady =
-              _stageClassifier.isReady && _errorClassifier.isReady;
-          _initializationStatus = _classifiersReady ? 'Ready' : 'Failed';
-        });
-      }
-
-      if (kDebugMode) {
-        print('[Lunges] ✅ Classifiers ready: $_classifiersReady');
-        print('[Lunges] Stage classifier ready: ${_stageClassifier.isReady}');
-        print('[Lunges] Error classifier ready: ${_errorClassifier.isReady}');
-      }
-    } catch (e, stackTrace) {
-      if (kDebugMode) {
-        print('[Lunges] ❌ Classifier initialization FAILED: $e');
-        print('[Lunges] Stack trace: $stackTrace');
-      }
-
-      if (mounted) {
-        setState(() {
-          _classifiersReady = false;
-          _initializationStatus = 'Error: $e';
-        });
-      }
-    }
-  }
-
   @override
   void dispose() {
     _poseDetector.close();
-    _stageClassifier.dispose();
-    _errorClassifier.dispose();
     _sessionTimer?.cancel(); // ensure timer is cancelled
     super.dispose();
   }
@@ -349,46 +298,9 @@ class _LungesState extends State<Lunges> {
   void _analyzePose(Pose pose) {
     final lm = pose.landmarks;
 
-    if (!_classifiersReady) {
-      if (kDebugMode) {
-        print('[Lunges] ⚠️ Skipping analysis - classifiers not ready');
-      }
-      return;
-    }
-
     try {
       // ═══════════════════════════════════════════════════════════════
-      // 1) EXTRACT KEYPOINTS (52 features)
-      // ═══════════════════════════════════════════════════════════════
-      final features = LungesFeatureExtractor.extractImportantKeypoints(lm);
-
-      // ═══════════════════════════════════════════════════════════════
-      // 2) STAGE PREDICTION (I/M/D)
-      // ═══════════════════════════════════════════════════════════════
-      final stageResult = _stageClassifier.predict(features);
-      _stagePredictedClass = stageResult['class'];
-      _stageProbability = stageResult['probability'];
-
-      // Update current stage based on prediction (matching Python logic)
-      if (_stagePredictedClass == 'I' &&
-          _stageProbability! >= predictionProbabilityThreshold) {
-        _currentStage = 'init';
-      } else if (_stagePredictedClass == 'M' &&
-          _stageProbability! >= predictionProbabilityThreshold) {
-        _currentStage = 'mid';
-      } else if (_stagePredictedClass == 'D' &&
-          _stageProbability! >= predictionProbabilityThreshold) {
-        // Count rep when transitioning from mid/init to down
-        if (_currentStage == 'mid' || _currentStage == 'init') {
-          _counter += 1;
-          // NEW: count attempted rep regardless of form
-          _attemptedReps += 1;
-        }
-        _currentStage = 'down';
-      }
-
-      // ═══════════════════════════════════════════════════════════════
-      // 3) KNEE ANGLE ANALYSIS
+      // 1) KNEE ANGLE ANALYSIS - ALWAYS FIRST
       // ═══════════════════════════════════════════════════════════════
       _kneeAnalysis = LungesFeatureExtractor.analyzeKneeAngle(
         lm,
@@ -396,28 +308,222 @@ class _LungesState extends State<Lunges> {
         angleThresholds,
       );
 
+      final rightKneeAngle = (_kneeAnalysis!['right']['angle'] as double);
+      final leftKneeAngle = (_kneeAnalysis!['left']['angle'] as double);
+
+      // Use the smaller angle (more bent knee) for stage detection
+      final minKneeAngle =
+          rightKneeAngle < leftKneeAngle ? rightKneeAngle : leftKneeAngle;
+
+      // Track previous stage for rep counting
+      final previousStage = _currentStage;
+
       // ═══════════════════════════════════════════════════════════════
-      // 4) ERROR DETECTION (Knee-Over-Toe) - Only in "down" stage
+      // 2) RULE-BASED STAGE DETECTION (Simple and Reliable!)
       // ═══════════════════════════════════════════════════════════════
-      if (_currentStage == 'down') {
-        final errorResult = _errorClassifier.predict(features);
-        _errorClass = errorResult['class'];
-        _errorProbability = errorResult['probability'];
+      // INIT: Standing upright (knees almost straight)
+      // MID: Descending/ascending (knees moderately bent)
+      // DOWN: Bottom of lunge (knees deeply bent)
+
+      if (minKneeAngle > 150) {
+        _currentStage = 'init';
+        _stagePredictedClass = 'I';
+        _stageProbability = 1.0;
+      } else if (minKneeAngle > 110) {
+        _currentStage = 'mid';
+        _stagePredictedClass = 'M';
+        _stageProbability = 1.0;
       } else {
-        _errorClass = null;
-        _errorProbability = null;
+        _currentStage = 'down';
+        _stagePredictedClass = 'D';
+        _stageProbability = 1.0;
       }
 
       if (kDebugMode) {
         print(
+          '[Lunges] 🎯 RULE-BASED: Stage=$_currentStage | Min Knee Angle=${minKneeAngle.toStringAsFixed(1)}° (R=${rightKneeAngle.toStringAsFixed(0)}° L=${leftKneeAngle.toStringAsFixed(0)}°)',
+        );
+
+        if (_currentStage != previousStage) {
+          print('[Lunges] ✅ TRANSITION: $previousStage → $_currentStage');
+        }
+      }
+
+      // ═══════════════════════════════════════════════════════════════
+      // 3) KNEE-OVER-TOE ERROR DETECTION (Multi-Factor Scoring!)
+      // ═══════════════════════════════════════════════════════════════
+      // Uses 3 indicators - needs 2+ to trigger K-O-T:
+      // 1. Knee-to-ankle horizontal distance > 25px
+      // 2. Knee-to-toe horizontal distance > 20px
+      // 3. Shin angle ratio > 0.35 (shin leaning forward)
+      _errorClass = null;
+      _errorProbability = null;
+
+      if (_currentStage == 'down') {
+        final rightKnee = lm[PoseLandmarkType.rightKnee];
+        final rightAnkle = lm[PoseLandmarkType.rightAnkle];
+        final rightFootIndex = lm[PoseLandmarkType.rightFootIndex];
+
+        final leftKnee = lm[PoseLandmarkType.leftKnee];
+        final leftAnkle = lm[PoseLandmarkType.leftAnkle];
+        final leftFootIndex = lm[PoseLandmarkType.leftFootIndex];
+
+        bool hasKOTError = false;
+
+        // NEW: Determine front leg by KNEE Y POSITION (lower knee = front leg in lunge)
+        // In camera coords, higher Y value = lower on screen = front leg
+        final rightKneeY = rightKnee?.y ?? 0;
+        final leftKneeY = leftKnee?.y ?? 0;
+
+        // Front leg is the one with LOWER Y position (higher on screen, closer to camera)
+        final rightIsFront = rightKneeY < leftKneeY;
+
+        if (kDebugMode) {
+          print(
+            '[Lunges] 🦵 Front leg: ${rightIsFront ? "RIGHT" : "LEFT"} (R_Y=$rightKneeY, L_Y=$leftKneeY)',
+          );
+        }
+
+        if (rightIsFront &&
+            rightKnee != null &&
+            rightAnkle != null &&
+            rightFootIndex != null) {
+          // Check RIGHT front leg ONLY
+          final kneeX = rightKnee.x;
+          final ankleX = rightAnkle.x;
+
+          // Simple and effective: Just check horizontal knee-to-ankle distance
+          // In proper form, ankle should be roughly below knee (small horizontal gap)
+          // In K-O-T error, knee is significantly ahead of ankle
+          final kneeToAnkleHorizontal = (kneeX - ankleX).abs();
+          final kneeAheadOfAnkle =
+              true; // REMOVED DIRECTION CHECK - works both ways now
+
+          if (kDebugMode) {
+            print(
+              // ignore: dead_code
+              '[Lunges] � RIGHT knee-to-ankle horizontal: ${kneeToAnkleHorizontal.toStringAsFixed(0)}px ${kneeAheadOfAnkle ? "(knee ahead)" : "(ankle ahead)"}',
+            );
+          }
+
+          // K-O-T: knee is ahead of ankle (>25px horizontal distance)
+          // LOWER threshold for better detection
+          // PLUS: Check ankle angle (knee-ankle-toe)
+          final ankleAngle = LungesFeatureExtractor.calculateAngle(
+            [rightKnee.x, rightKnee.y],
+            [rightAnkle.x, rightAnkle.y],
+            [rightFootIndex.x, rightFootIndex.y],
+          );
+
+          // Multi-factor: distance + ankle bend
+          final distanceError = kneeAheadOfAnkle && kneeToAnkleHorizontal > 25;
+          final ankleBentError =
+              ankleAngle < 85; // Ankle too bent indicates K-O-T
+
+          if (distanceError || ankleBentError) {
+            hasKOTError = true;
+            if (kDebugMode) {
+              print(
+                '[Lunges] 🚨 RIGHT K-O-T: Distance=${kneeToAnkleHorizontal.toStringAsFixed(0)}px AnkleAngle=${ankleAngle.toStringAsFixed(0)}° ${distanceError ? "[DIST]" : ""}${ankleBentError ? "[ANKLE]" : ""}',
+              );
+            }
+          } else if (kDebugMode) {
+            print(
+              '[Lunges] ✅ RIGHT OK: Distance=${kneeToAnkleHorizontal.toStringAsFixed(0)}px AnkleAngle=${ankleAngle.toStringAsFixed(0)}°',
+            );
+          }
+        } else if (!rightIsFront &&
+            leftKnee != null &&
+            leftAnkle != null &&
+            leftFootIndex != null) {
+          // Check LEFT front leg ONLY
+          final kneeX = leftKnee.x;
+          final ankleX = leftAnkle.x;
+
+          final kneeToAnkleHorizontal = (kneeX - ankleX).abs();
+          final kneeAheadOfAnkle =
+              true; // REMOVED DIRECTION CHECK - works both ways now
+
+          if (kDebugMode) {
+            print(
+              // ignore: dead_code
+              '[Lunges] � LEFT knee-to-ankle horizontal: ${kneeToAnkleHorizontal.toStringAsFixed(0)}px ${kneeAheadOfAnkle ? "(knee ahead)" : "(ankle ahead)"}',
+            );
+          }
+
+          // K-O-T: knee is ahead of ankle (>25px horizontal distance)
+          // LOWER threshold for better detection
+          // PLUS: Check ankle angle (knee-ankle-toe)
+          final ankleAngle = LungesFeatureExtractor.calculateAngle(
+            [leftKnee.x, leftKnee.y],
+            [leftAnkle.x, leftAnkle.y],
+            [leftFootIndex.x, leftFootIndex.y],
+          );
+
+          // Multi-factor: distance + ankle bend
+          final distanceError = kneeAheadOfAnkle && kneeToAnkleHorizontal > 25;
+          final ankleBentError = ankleAngle < 85; // Ankle too bent
+
+          if (distanceError || ankleBentError) {
+            hasKOTError = true;
+            if (kDebugMode) {
+              print(
+                '[Lunges] 🚨 LEFT K-O-T: Distance=${kneeToAnkleHorizontal.toStringAsFixed(0)}px AnkleAngle=${ankleAngle.toStringAsFixed(0)}° ${distanceError ? "[DIST]" : ""}${ankleBentError ? "[ANKLE]" : ""}',
+              );
+            }
+          } else if (kDebugMode) {
+            print(
+              '[Lunges] ✅ LEFT OK: Distance=${kneeToAnkleHorizontal.toStringAsFixed(0)}px AnkleAngle=${ankleAngle.toStringAsFixed(0)}°',
+            );
+          }
+        }
+
+        if (hasKOTError) {
+          _errorClass = 'K';
+          _errorProbability = 1.0;
+        }
+      }
+
+      // ═══════════════════════════════════════════════════════════════
+      // 5) REP COUNTING - Count when ENTERING "down" from "mid" or "init"
+      // Matches Python logic: if current_stage in ["mid", "init"]: counter += 1
+      // ═══════════════════════════════════════════════════════════════
+      // Count rep when we transition TO "down" FROM "mid" or "init"
+      if (kDebugMode) {
+        print(
+          '[Lunges] 🔍 Rep Check - Previous: "$previousStage", Current: "$_currentStage"',
+        );
+      }
+
+      if (_currentStage == 'down' &&
+          (previousStage == 'mid' || previousStage == 'init')) {
+        _counter += 1;
+        _attemptedReps += 1;
+        if (kDebugMode) {
+          print(
+            '[Lunges] 🎉🎉🎉 REP #$_counter COUNTED! ($previousStage → down) 🎉🎉🎉',
+          );
+        }
+      } else if (kDebugMode) {
+        if (_currentStage == 'down' && previousStage == 'down') {
+          print('[Lunges] ⏭️ Already in down stage, no rep');
+        } else if (_currentStage != 'down') {
+          print('[Lunges] ⏭️ Not in down stage yet');
+        }
+      }
+      if (kDebugMode) {
+        print(
           '[Lunges] Stage: $_currentStage ($_stagePredictedClass @ ${(_stageProbability! * 100).toStringAsFixed(0)}%) | '
           'Counter: $_counter | '
-          'Error: $_errorClass @ ${_errorProbability != null ? (_errorProbability! * 100).toStringAsFixed(0) : "N/A"}%',
+          'Error: $_errorClass${_errorProbability != null ? " @ ${(_errorProbability! * 100).toStringAsFixed(0)}%" : " (not checked)"}',
         );
-        print('[Lunges] Features extracted: ${features.length} values');
-        print(
-          '[Lunges] Probability value: $_stageProbability (formatted: ${_stageProbability!.toStringAsFixed(2)})',
-        );
+        if (_kneeAnalysis != null) {
+          final rightAngle = (_kneeAnalysis!['right']['angle'] as double)
+              .toStringAsFixed(0);
+          final leftAngle = (_kneeAnalysis!['left']['angle'] as double)
+              .toStringAsFixed(0);
+          print('[Lunges] Knee angles: R:$rightAngle° L:$leftAngle°');
+        }
       }
     } catch (e) {
       if (kDebugMode) print('[Lunges] Analysis error: $e');
@@ -425,7 +531,7 @@ class _LungesState extends State<Lunges> {
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // UI BUILD METHOD
+  // UI BUILD METHODzz
   // ═══════════════════════════════════════════════════════════════
 
   @override
@@ -435,393 +541,409 @@ class _LungesState extends State<Lunges> {
     // Determine HUD color based on form quality
     final hudColor = _errorClass == 'K' ? Colors.redAccent : Colors.green;
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Lunges'),
-        backgroundColor: Colors.black.withValues(alpha: 0.7),
-        foregroundColor: Colors.white,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.info_outline),
-            onPressed: _showInstructionsDialog,
-          ),
-        ],
-      ),
-      body:
-          _showCamera
-              ? Stack(
-                children: [
-                  // Camera feed
-                  CameraWidget(
-                    showCamera: _showCamera,
-                    onImage: _onCameraImage,
-                  ),
-
-                  // Pose skeleton overlay
-                  if (_latestPose != null &&
-                      _imageWidth != null &&
-                      _imageHeight != null)
-                    Positioned.fill(
-                      child: CustomPaint(
-                        painter: _LungesPainter(
-                          pose: _latestPose!,
-                          imageWidth: _imageWidth!,
-                          imageHeight: _imageHeight!,
-                          kneeAnalysis: _kneeAnalysis,
-                          currentStage: _currentStage,
-                          rotation: _rotation,
-                          mirror: true,
-                          errorClass: _errorClass,
-                        ),
-                      ),
+    // Replace deprecated onPopInvoked with onPopInvokedWithResult
+    return PopScope(
+      canPop: !_sessionActive,
+      onPopInvokedWithResult: (didPop, result) async {
+        if (didPop) return; // predictive/system back already popped
+        final proceed = await _confirmExitIfSessionActive();
+        if (proceed && mounted) {
+          // ignore: use_build_context_synchronously
+          Navigator.of(context).pop(result);
+        }
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('Lunges'),
+          backgroundColor: Colors.black.withValues(alpha: 0.7),
+          foregroundColor: Colors.white,
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.info_outline),
+              onPressed: _showInstructionsDialog,
+            ),
+          ],
+        ),
+        body:
+            _showCamera
+                ? Stack(
+                  children: [
+                    // Camera feed
+                    CameraWidget(
+                      showCamera: _showCamera,
+                      onImage: _onCameraImage,
                     ),
 
-                  // HUD with metrics (matching bicep curl style)
-                  Positioned(
-                    top: 16,
-                    left: 16,
-                    right: 16,
-                    child: Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: Colors.black54,
-                        border: Border.all(color: hudColor, width: 2),
-                        borderRadius: BorderRadius.circular(12),
+                    // Pose skeleton overlay
+                    if (_latestPose != null &&
+                        _imageWidth != null &&
+                        _imageHeight != null)
+                      Positioned.fill(
+                        child: CustomPaint(
+                          painter: _LungesPainter(
+                            pose: _latestPose!,
+                            imageWidth: _imageWidth!,
+                            imageHeight: _imageHeight!,
+                            kneeAnalysis: _kneeAnalysis,
+                            currentStage: _currentStage,
+                            rotation: _rotation,
+                            mirror: true,
+                            errorClass: _errorClass,
+                          ),
+                        ),
                       ),
-                      child: DefaultTextStyle(
-                        style: const TextStyle(color: Colors.white),
-                        child: Column(
-                          children: [
-                            // Status row
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                              children: [
-                                // Stage status
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      const Text(
-                                        'STAGE',
-                                        style: TextStyle(
-                                          fontSize: 11,
-                                          fontWeight: FontWeight.w600,
-                                          color: Colors.white70,
-                                        ),
-                                      ),
-                                      const SizedBox(height: 4),
-                                      Text(
-                                        _currentStage.isNotEmpty
-                                            ? _currentStage.toUpperCase()
-                                            : 'INIT',
-                                        style: const TextStyle(
-                                          fontSize: 18,
-                                          fontWeight: FontWeight.bold,
-                                          color: Colors.white,
-                                        ),
-                                      ),
-                                      Text(
-                                        'Confidence: ${_stageProbability != null ? (_stageProbability! * 100).toStringAsFixed(0) : "0"}%',
-                                        style: const TextStyle(
-                                          fontSize: 10,
-                                          color: Colors.white60,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
 
-                                // Reps & Sets container (UPDATED)
-                                Container(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 16,
-                                    vertical: 8,
-                                  ),
-                                  decoration: BoxDecoration(
-                                    color: Colors.white.withValues(alpha: 0.1),
-                                    borderRadius: BorderRadius.circular(8),
-                                  ),
-                                  child: Column(
-                                    children: [
-                                      const Text(
-                                        'REPS',
-                                        style: TextStyle(
-                                          fontSize: 11,
-                                          fontWeight: FontWeight.w600,
-                                          color: Colors.white70,
-                                        ),
-                                      ),
-                                      const SizedBox(height: 4),
-                                      // Display total overall reps
-                                      Text(
-                                        '$_counter',
-                                        style: const TextStyle(
-                                          fontSize: 28,
-                                          fontWeight: FontWeight.bold,
-                                          color: Colors.white,
-                                        ),
-                                      ),
-                                      const SizedBox(height: 4),
-                                      // Remove the " •  Total: $_counter"
-                                      Text(
-                                        'Sets: $_setsCompleted',
-                                        style: const TextStyle(
-                                          fontSize: 10,
-                                          color: Colors.white60,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ],
-                            ),
-
-                            // NEW: Session duration row (buttons moved to bottom center)
-                            const SizedBox(height: 8),
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.start,
-                              children: [
-                                // Duration display only
-                                Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    const Text(
-                                      'DURATION',
-                                      style: TextStyle(
-                                        fontSize: 11,
-                                        fontWeight: FontWeight.w600,
-                                        color: Colors.white70,
-                                      ),
-                                    ),
-                                    const SizedBox(height: 4),
-                                    Text(
-                                      _formatDuration(_sessionElapsed),
-                                      style: const TextStyle(
-                                        fontSize: 14,
-                                        fontWeight: FontWeight.bold,
-                                        color: Colors.white,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ],
-                            ),
-
-                            const SizedBox(height: 12),
-                            const Divider(color: Colors.white24, height: 1),
-                            const SizedBox(height: 12),
-
-                            // Form analysis row
-                            Row(
-                              children: [
-                                // Knee-Over-Toe status
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      const Text(
-                                        'KNEE-OVER-TOE',
-                                        style: TextStyle(
-                                          fontSize: 11,
-                                          fontWeight: FontWeight.w600,
-                                          color: Colors.white70,
-                                        ),
-                                      ),
-                                      const SizedBox(height: 4),
-                                      Row(
-                                        children: [
-                                          Icon(
-                                            _errorClass == 'K'
-                                                ? Icons.warning_rounded
-                                                : Icons.check_circle_rounded,
-                                            color:
-                                                _errorClass == 'K'
-                                                    ? Colors.red
-                                                    : Colors.green,
-                                            size: 16,
-                                          ),
-                                          const SizedBox(width: 6),
-                                          Text(
-                                            _errorClass == 'K'
-                                                ? 'Detected'
-                                                : 'Good Form',
-                                            style: TextStyle(
-                                              fontSize: 13,
-                                              fontWeight: FontWeight.bold,
-                                              color:
-                                                  _errorClass == 'K'
-                                                      ? Colors.red
-                                                      : Colors.green,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                      if (_errorProbability != null)
-                                        Text(
-                                          'Confidence: ${(_errorProbability! * 100).toStringAsFixed(0)}%',
-                                          style: const TextStyle(
-                                            fontSize: 10,
-                                            color: Colors.white60,
-                                          ),
-                                        ),
-                                    ],
-                                  ),
-                                ),
-
-                                // Knee angles
-                                if (_kneeAnalysis != null)
-                                  Container(
-                                    padding: const EdgeInsets.all(8),
-                                    decoration: BoxDecoration(
-                                      color: Colors.white.withValues(
-                                        alpha: 0.1,
-                                      ),
-                                      borderRadius: BorderRadius.circular(6),
-                                    ),
+                    // HUD with metrics (matching bicep curl style)
+                    Positioned(
+                      top: 16,
+                      left: 16,
+                      right: 16,
+                      child: Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: Colors.black54,
+                          border: Border.all(color: hudColor, width: 2),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: DefaultTextStyle(
+                          style: const TextStyle(color: Colors.white),
+                          child: Column(
+                            children: [
+                              // Status row
+                              Row(
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceBetween,
+                                children: [
+                                  // Stage status
+                                  Expanded(
                                     child: Column(
                                       crossAxisAlignment:
                                           CrossAxisAlignment.start,
                                       children: [
+                                        const Text(
+                                          'STAGE',
+                                          style: TextStyle(
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.w600,
+                                            color: Colors.white70,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 4),
                                         Row(
                                           children: [
-                                            const Text(
-                                              'R: ',
-                                              style: TextStyle(
-                                                fontSize: 11,
-                                                color: Colors.white70,
+                                            Container(
+                                              width: 8,
+                                              height: 8,
+                                              decoration: BoxDecoration(
+                                                color:
+                                                    _currentStage == 'down'
+                                                        ? Colors.green
+                                                        : _currentStage == 'mid'
+                                                        ? Colors.orange
+                                                        : Colors.blue,
+                                                shape: BoxShape.circle,
                                               ),
                                             ),
+                                            const SizedBox(width: 8),
                                             Text(
-                                              '${(_kneeAnalysis!['right']['angle'] as double).toStringAsFixed(0)}°',
+                                              _currentStage.isNotEmpty
+                                                  ? _currentStage.toUpperCase()
+                                                  : 'INIT',
                                               style: TextStyle(
-                                                fontSize: 12,
+                                                fontSize: 22,
                                                 fontWeight: FontWeight.bold,
                                                 color:
-                                                    _kneeAnalysis!['right']['error']
-                                                        ? Colors.red
-                                                        : Colors.green,
+                                                    _currentStage == 'down'
+                                                        ? Colors.green
+                                                        : _currentStage == 'mid'
+                                                        ? Colors.orange
+                                                        : Colors.blue,
                                               ),
                                             ),
                                           ],
                                         ),
                                         const SizedBox(height: 2),
+                                        Text(
+                                          '${_stageProbability != null ? (_stageProbability! * 100).toStringAsFixed(0) : "100"}% confident',
+                                          style: const TextStyle(
+                                            fontSize: 10,
+                                            color: Colors.white60,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+
+                                  // Reps & Sets container (UPDATED)
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 16,
+                                      vertical: 8,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: Colors.white.withValues(
+                                        alpha: 0.1,
+                                      ),
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    child: Column(
+                                      children: [
+                                        const Text(
+                                          'REPS',
+                                          style: TextStyle(
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.w600,
+                                            color: Colors.white70,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 4),
+                                        // Display total overall reps
+                                        Text(
+                                          '$_counter',
+                                          style: const TextStyle(
+                                            fontSize: 28,
+                                            fontWeight: FontWeight.bold,
+                                            color: Colors.white,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 4),
+                                        // Remove the " •  Total: $_counter"
+                                        Text(
+                                          'Sets: $_setsCompleted',
+                                          style: const TextStyle(
+                                            fontSize: 10,
+                                            color: Colors.white60,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                              ),
+
+                              // NEW: Session duration row (buttons moved to bottom center)
+                              const SizedBox(height: 8),
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.start,
+                                children: [
+                                  // Duration display only
+                                  Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      const Text(
+                                        'DURATION',
+                                        style: TextStyle(
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w600,
+                                          color: Colors.white70,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        _formatDuration(_sessionElapsed),
+                                        style: const TextStyle(
+                                          fontSize: 14,
+                                          fontWeight: FontWeight.bold,
+                                          color: Colors.white,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                              ),
+
+                              const SizedBox(height: 12),
+                              const Divider(color: Colors.white24, height: 1),
+                              const SizedBox(height: 12),
+
+                              // Form analysis row
+                              Row(
+                                children: [
+                                  // Knee-Over-Toe status
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        const Text(
+                                          'KNEE-OVER-TOE',
+                                          style: TextStyle(
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.w600,
+                                            color: Colors.white70,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 4),
                                         Row(
                                           children: [
-                                            const Text(
-                                              'L: ',
-                                              style: TextStyle(
-                                                fontSize: 11,
-                                                color: Colors.white70,
-                                              ),
+                                            Icon(
+                                              _errorClass == 'K'
+                                                  ? Icons.warning_rounded
+                                                  : Icons.check_circle_rounded,
+                                              color:
+                                                  _errorClass == 'K'
+                                                      ? Colors.red
+                                                      : Colors.green,
+                                              size: 16,
                                             ),
+                                            const SizedBox(width: 6),
                                             Text(
-                                              '${(_kneeAnalysis!['left']['angle'] as double).toStringAsFixed(0)}°',
+                                              _errorClass == 'K'
+                                                  ? 'Detected'
+                                                  : 'Good Form',
                                               style: TextStyle(
-                                                fontSize: 12,
+                                                fontSize: 13,
                                                 fontWeight: FontWeight.bold,
                                                 color:
-                                                    _kneeAnalysis!['left']['error']
+                                                    _errorClass == 'K'
                                                         ? Colors.red
                                                         : Colors.green,
                                               ),
                                             ),
                                           ],
                                         ),
+                                        if (_errorProbability != null)
+                                          Text(
+                                            'Confidence: ${(_errorProbability! * 100).toStringAsFixed(0)}%',
+                                            style: const TextStyle(
+                                              fontSize: 10,
+                                              color: Colors.white60,
+                                            ),
+                                          ),
                                       ],
                                     ),
                                   ),
-                              ],
+
+                                  // Knee angles
+                                  if (_kneeAnalysis != null)
+                                    Container(
+                                      padding: const EdgeInsets.all(8),
+                                      decoration: BoxDecoration(
+                                        color: Colors.white.withValues(
+                                          alpha: 0.1,
+                                        ),
+                                        borderRadius: BorderRadius.circular(6),
+                                      ),
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Row(
+                                            children: [
+                                              const Text(
+                                                'R: ',
+                                                style: TextStyle(
+                                                  fontSize: 11,
+                                                  color: Colors.white70,
+                                                ),
+                                              ),
+                                              Text(
+                                                '${(_kneeAnalysis!['right']['angle'] as double).toStringAsFixed(0)}°',
+                                                style: TextStyle(
+                                                  fontSize: 12,
+                                                  fontWeight: FontWeight.bold,
+                                                  color:
+                                                      _kneeAnalysis!['right']['error']
+                                                          ? Colors.red
+                                                          : Colors.green,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                          const SizedBox(height: 2),
+                                          Row(
+                                            children: [
+                                              const Text(
+                                                'L: ',
+                                                style: TextStyle(
+                                                  fontSize: 11,
+                                                  color: Colors.white70,
+                                                ),
+                                              ),
+                                              Text(
+                                                '${(_kneeAnalysis!['left']['angle'] as double).toStringAsFixed(0)}°',
+                                                style: TextStyle(
+                                                  fontSize: 12,
+                                                  fontWeight: FontWeight.bold,
+                                                  color:
+                                                      _kneeAnalysis!['left']['error']
+                                                          ? Colors.red
+                                                          : Colors.green,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ), // end of main HUD Positioned
+                    // Bottom-center Start / End buttons (transparent / faint colors)
+                    Positioned(
+                      bottom: 24,
+                      left: 0,
+                      right: 0,
+                      child: Center(
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            ElevatedButton(
+                              onPressed: _sessionActive ? null : _startSession,
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.green.withValues(
+                                  alpha: 0.15,
+                                ),
+                                elevation: 0,
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(24),
+                                ),
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 28,
+                                  vertical: 12,
+                                ),
+                                shadowColor: Colors.transparent,
+                              ),
+                              child: const Text(
+                                'Start',
+                                style: TextStyle(color: Colors.white),
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            ElevatedButton(
+                              onPressed: _sessionActive ? _endSession : null,
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.red.withValues(
+                                  alpha: 0.12,
+                                ),
+                                elevation: 0,
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(24),
+                                ),
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 28,
+                                  vertical: 12,
+                                ),
+                                shadowColor: Colors.transparent,
+                              ),
+                              child: const Text(
+                                'End',
+                                style: TextStyle(color: Colors.white),
+                              ),
                             ),
                           ],
                         ),
                       ),
                     ),
-                  ), // end of main HUD Positioned
-                  // Bottom-center Start / End buttons (transparent / faint colors)
-                  Positioned(
-                    bottom: 24,
-                    left: 0,
-                    right: 0,
-                    child: Center(
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          ElevatedButton(
-                            onPressed: _sessionActive ? null : _startSession,
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.green.withValues(
-                                alpha: 0.15,
-                              ),
-                              elevation: 0,
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(24),
-                              ),
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 28,
-                                vertical: 12,
-                              ),
-                              shadowColor: Colors.transparent,
-                            ),
-                            child: const Text(
-                              'Start',
-                              style: TextStyle(color: Colors.white),
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          ElevatedButton(
-                            onPressed: _sessionActive ? _endSession : null,
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.red.withValues(
-                                alpha: 0.12,
-                              ),
-                              elevation: 0,
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(24),
-                              ),
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 28,
-                                vertical: 12,
-                              ),
-                              shadowColor: Colors.transparent,
-                            ),
-                            child: const Text(
-                              'End',
-                              style: TextStyle(color: Colors.white),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-
-                  // Initialization status indicator (only show if not ready)
-                  if (!_classifiersReady)
-                    Positioned(
-                      top: 90,
-                      left: 16,
-                      right: 16,
-                      child: Container(
-                        padding: const EdgeInsets.all(8),
-                        decoration: BoxDecoration(
-                          color: Colors.red.withValues(alpha: 0.8),
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                        child: Text(
-                          'Init: ${_initializationAttempted ? "YES" : "NO"} | Status: $_initializationStatus',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 11,
-                            fontWeight: FontWeight.bold,
-                          ),
-                          textAlign: TextAlign.center,
-                        ),
-                      ),
-                    ),
-                ],
-              )
-              : const Center(child: Text('Camera off')),
+                  ],
+                )
+                : const Center(child: Text('Camera off')),
+      ),
     );
   }
 
@@ -873,6 +995,35 @@ class _LungesState extends State<Lunges> {
             ],
           ),
     );
+  }
+
+  // New: confirm exit if session is active
+  Future<bool> _confirmExitIfSessionActive() async {
+    if (!_sessionActive) return true;
+
+    final proceed = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder:
+          (_) => AlertDialog(
+            title: const Text('Unsaved Session'),
+            content: const Text(
+              'You have not yet ended the session, proceeding to exit the session without saving will lose all unsaved progress, do you wish to proceed?',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(false),
+                child: const Text('No'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(true),
+                child: const Text('Yes'),
+              ),
+            ],
+          ),
+    );
+
+    return proceed ?? false;
   }
 }
 

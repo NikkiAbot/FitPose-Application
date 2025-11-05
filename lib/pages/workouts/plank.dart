@@ -61,6 +61,9 @@ class _PlankState extends State<Plank> {
   // NEW: track if a body is currently detected
   bool _bodyDetected = false;
 
+  // NEW: flag to track if a session is active
+  bool _sessionActive = false;
+
   @override
   void initState() {
     super.initState();
@@ -586,6 +589,7 @@ class _PlankState extends State<Plank> {
     if (_userRequestedStart) return;
     setState(() {
       _userRequestedStart = true;
+      _sessionActive = true; // mark session active on Start
       _feedback = 'Start pressed: waiting for good form';
       // reset attempted plank at session start
       _attemptedPlank = 0;
@@ -619,6 +623,7 @@ class _PlankState extends State<Plank> {
     final saved = await _saveSession();
     if (saved) {
       setState(() {
+        _sessionActive = false; // mark session ended
         _sessionSaved = true;
         _userRequestedStart = false;
         _feedback = 'Ended by user';
@@ -629,6 +634,7 @@ class _PlankState extends State<Plank> {
       });
     } else {
       setState(() {
+        _sessionActive = false; // ensure session not active even if save failed
         _userRequestedStart = false;
         _feedback = 'Ended by user (save failed)';
       });
@@ -652,9 +658,8 @@ class _PlankState extends State<Plank> {
       context: context,
       barrierDismissible: false,
       builder:
-          // ignore: deprecated_member_use
-          (_) => WillPopScope(
-            onWillPop: () async => false, // disable system/back button
+          (_) => PopScope(
+            canPop: false, // disable system/back while instructions are shown
             child: Dialog(
               // ignore: deprecated_member_use
               backgroundColor: Theme.of(context).dialogBackgroundColor,
@@ -706,196 +711,233 @@ class _PlankState extends State<Plank> {
     );
   }
 
+  Future<bool> _confirmExitIfInProgress() async {
+    if (!_sessionActive) return true;
+    if (!mounted) return true;
+    final shouldExit = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder:
+          (context) => AlertDialog(
+            title: const Text('Unsaved Session'),
+            content: const Text(
+              'You have not yet ended the session proceeding to exit the session without saving will lose all unsaved progress, do you wish to proceed?',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(true),
+                child: const Text('Yes'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(false),
+                child: const Text('No'),
+              ),
+            ],
+          ),
+    );
+    return shouldExit ?? false;
+  }
+
   @override
   Widget build(BuildContext context) {
     final hudColor = _goodForm ? Colors.green : Colors.redAccent;
 
-    return Scaffold(
-      backgroundColor: Colors.black,
-      appBar: AppBar(
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back, color: Colors.grey, size: 28),
-          onPressed: () => Navigator.of(context).pop(),
-          tooltip: 'Back',
+    return PopScope(
+      canPop: !_sessionActive,
+      onPopInvokedWithResult: (didPop, result) async {
+        if (didPop) return;
+        if (!mounted) return;
+        final ok = await _confirmExitIfInProgress();
+        // ignore: use_build_context_synchronously
+        if (ok && mounted) Navigator.of(context).pop();
+      },
+      child: Scaffold(
+        backgroundColor: Colors.black,
+        appBar: AppBar(
+          backgroundColor: const Color.fromARGB(0, 209, 209, 209),
+          elevation: 0,
+          leading: BackButton(
+            onPressed: () => Navigator.of(context).maybePop(),
+          ),
         ),
-      ),
-      body:
-          _showCamera
-              ? Stack(
-                children: [
-                  CameraWidget(
-                    showCamera: _showCamera,
-                    onImage: _onCameraImage,
-                  ),
-                  if (_latestPose != null &&
-                      _imageWidth != null &&
-                      _imageHeight != null)
+        body:
+            _showCamera
+                ? Stack(
+                  children: [
+                    CameraWidget(
+                      showCamera: _showCamera,
+                      onImage: _onCameraImage,
+                    ),
+                    if (_latestPose != null &&
+                        _imageWidth != null &&
+                        _imageHeight != null)
+                      Positioned.fill(
+                        child: CustomPaint(
+                          painter: _PlankPainter(
+                            pose: _latestPose!,
+                            imageWidth: _imageWidth!,
+                            imageHeight: _imageHeight!,
+                            postureGood: _goodForm,
+                            rotation: _rotation,
+                            bodyAngleDeg: _bodyAngleDeg,
+                            segAngleDeg: _segAngleDeg,
+                          ),
+                        ),
+                      ),
+                    // CENTER: Start / End buttons
                     Positioned.fill(
-                      child: CustomPaint(
-                        painter: _PlankPainter(
-                          pose: _latestPose!,
-                          imageWidth: _imageWidth!,
-                          imageHeight: _imageHeight!,
-                          postureGood: _goodForm,
-                          rotation: _rotation,
-                          bodyAngleDeg: _bodyAngleDeg,
-                          segAngleDeg: _segAngleDeg,
-                        ),
-                      ),
-                    ),
-                  // CENTER: Start / End buttons
-                  Positioned.fill(
-                    child: IgnorePointer(
-                      ignoring: false,
-                      child: Center(
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            ElevatedButton(
-                              onPressed:
-                                  _userRequestedStart ? null : _onStartPressed,
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: Colors.green.withValues(
-                                  alpha: 0.12,
-                                ),
-                                foregroundColor: Colors.greenAccent,
-                                elevation: 0,
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 20,
-                                  vertical: 12,
-                                ),
-                              ),
-                              child: const Text('Start'),
-                            ),
-                            const SizedBox(width: 16),
-                            ElevatedButton(
-                              onPressed:
-                                  (_userRequestedStart || _holding)
-                                      ? _onEndPressed
-                                      : null,
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: Colors.red.withValues(
-                                  alpha: 0.12,
-                                ),
-                                foregroundColor: Colors.redAccent,
-                                elevation: 0,
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 20,
-                                  vertical: 12,
-                                ),
-                              ),
-                              child: const Text('End'),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-                  Positioned(
-                    bottom: 16,
-                    left: 16,
-                    right: 16,
-                    child: Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: Colors.black54,
-                        border: Border.all(color: hudColor, width: 2),
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: DefaultTextStyle(
-                        style: const TextStyle(color: Colors.white),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            // LEFT SIDE: hold time + feedback
-                            Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  'Hold Time: $formattedHoldTime',
-                                  style: const TextStyle(
-                                    fontSize: 18,
-                                    fontWeight: FontWeight.bold,
+                      child: IgnorePointer(
+                        ignoring: false,
+                        child: Center(
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              ElevatedButton(
+                                onPressed:
+                                    _userRequestedStart
+                                        ? null
+                                        : _onStartPressed,
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.green.withValues(
+                                    alpha: 0.12,
+                                  ),
+                                  foregroundColor: Colors.greenAccent,
+                                  elevation: 0,
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 20,
+                                    vertical: 12,
                                   ),
                                 ),
-                                Text(
-                                  _feedback,
-                                  style: TextStyle(
-                                    color:
-                                        _goodForm
-                                            ? Colors.greenAccent
-                                            : Colors.orangeAccent,
-                                    fontWeight: FontWeight.w600,
+                                child: const Text('Start'),
+                              ),
+                              const SizedBox(width: 16),
+                              ElevatedButton(
+                                onPressed:
+                                    (_userRequestedStart || _holding)
+                                        ? _onEndPressed
+                                        : null,
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.red.withValues(
+                                    alpha: 0.12,
+                                  ),
+                                  foregroundColor: Colors.redAccent,
+                                  elevation: 0,
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 20,
+                                    vertical: 12,
                                   ),
                                 ),
-                              ],
-                            ),
-
-                            // RIGHT SIDE: angles info
-                            Column(
-                              crossAxisAlignment: CrossAxisAlignment.end,
-                              children: [
-                                Text(
-                                  'Hip angle: ${_bodyAngleDeg != null ? "${_bodyAngleDeg!.toStringAsFixed(1)}°" : "-"}',
-                                  style: const TextStyle(fontSize: 14),
-                                ),
-                                Text(
-                                  'Orientation: ${_segAngleDeg != null ? "${_segAngleDeg!.toStringAsFixed(1)}°" : "-"}',
-                                  style: const TextStyle(fontSize: 14),
-                                ),
-                                Text(
-                                  'Hip dev: ${_hipDeviationPx != null ? _hipDeviationPx!.toStringAsFixed(1) : "-"} px',
-                                  style: const TextStyle(fontSize: 14),
-                                ),
-                              ],
-                            ),
-                          ],
+                                child: const Text('End'),
+                              ),
+                            ],
+                          ),
                         ),
                       ),
                     ),
-                  ),
-
-                  // NOTIFICATION: show small message below the bottom HUD when session saved
-                  if (_sessionSaved)
                     Positioned(
-                      bottom: 8,
+                      bottom: 16,
                       left: 16,
                       right: 16,
-                      child: Center(
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                            vertical: 6,
-                            horizontal: 12,
-                          ),
-                          decoration: BoxDecoration(
-                            color: Colors.black87,
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(
-                              color: Colors.greenAccent,
-                              width: 1.5,
-                            ),
-                          ),
-                          child: const Text(
-                            'Session saved.',
-                            style: TextStyle(
-                              color: Colors.greenAccent,
-                              fontWeight: FontWeight.bold,
-                            ),
+                      child: Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: Colors.black54,
+                          border: Border.all(color: hudColor, width: 2),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: DefaultTextStyle(
+                          style: const TextStyle(color: Colors.white),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              // LEFT SIDE: hold time + feedback
+                              Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    'Hold Time: $formattedHoldTime',
+                                    style: const TextStyle(
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                  Text(
+                                    _feedback,
+                                    style: TextStyle(
+                                      color:
+                                          _goodForm
+                                              ? Colors.greenAccent
+                                              : Colors.orangeAccent,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ],
+                              ),
+
+                              // RIGHT SIDE: angles info
+                              Column(
+                                crossAxisAlignment: CrossAxisAlignment.end,
+                                children: [
+                                  Text(
+                                    'Hip angle: ${_bodyAngleDeg != null ? "${_bodyAngleDeg!.toStringAsFixed(1)}°" : "-"}',
+                                    style: const TextStyle(fontSize: 14),
+                                  ),
+                                  Text(
+                                    'Orientation: ${_segAngleDeg != null ? "${_segAngleDeg!.toStringAsFixed(1)}°" : "-"}',
+                                    style: const TextStyle(fontSize: 14),
+                                  ),
+                                  Text(
+                                    'Hip dev: ${_hipDeviationPx != null ? _hipDeviationPx!.toStringAsFixed(1) : "-"} px',
+                                    style: const TextStyle(fontSize: 14),
+                                  ),
+                                ],
+                              ),
+                            ],
                           ),
                         ),
                       ),
                     ),
-                ],
-              )
-              : const Center(
-                child: Text(
-                  'Camera off',
-                  style: TextStyle(color: Colors.white),
+
+                    // NOTIFICATION: show small message below the bottom HUD when session saved
+                    if (_sessionSaved)
+                      Positioned(
+                        bottom: 8,
+                        left: 16,
+                        right: 16,
+                        child: Center(
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              vertical: 6,
+                              horizontal: 12,
+                            ),
+                            decoration: BoxDecoration(
+                              color: Colors.black87,
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(
+                                color: Colors.greenAccent,
+                                width: 1.5,
+                              ),
+                            ),
+                            child: const Text(
+                              'Session saved.',
+                              style: TextStyle(
+                                color: Colors.greenAccent,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                )
+                : const Center(
+                  child: Text(
+                    'Camera off',
+                    style: TextStyle(color: Colors.white),
+                  ),
                 ),
-              ),
+      ),
     );
   }
 }

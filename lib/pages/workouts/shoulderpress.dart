@@ -967,6 +967,15 @@ class _ShoulderPressState extends State<ShoulderPress> {
                                             fontWeight: FontWeight.w400,
                                           ),
                                         ),
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          'Attempts: $_attemptedReps',
+                                          style: const TextStyle(
+                                            color: Colors.white70,
+                                            fontSize: 9,
+                                            fontWeight: FontWeight.w400,
+                                          ),
+                                        ),
                                       ],
                                     ),
                                   ),
@@ -1091,7 +1100,7 @@ class _ShoulderPressState extends State<ShoulderPress> {
                       ),
                     ),
 
-                    // === Start / End buttons (unchanged) ===
+                    // === Start / End buttons (more visible, compact like Squats) ===
                     Positioned(
                       left: 16,
                       right: 16,
@@ -1105,13 +1114,15 @@ class _ShoulderPressState extends State<ShoulderPress> {
                             child: Container(
                               padding: const EdgeInsets.symmetric(
                                 horizontal: 12,
-                                vertical: 6,
+                                vertical: 8,
                               ),
                               decoration: BoxDecoration(
                                 color:
                                     _sessionActive
-                                        ? Colors.green.withAlpha(20)
-                                        : Colors.green.withAlpha(60),
+                                        ? Colors.green.withAlpha(64) // disabled
+                                        : Colors.green.withAlpha(
+                                          180,
+                                        ), // enabled
                                 borderRadius: BorderRadius.circular(8),
                               ),
                               child: Row(
@@ -1122,9 +1133,9 @@ class _ShoulderPressState extends State<ShoulderPress> {
                                         _sessionActive
                                             ? Colors.white70
                                             : Colors.white,
-                                    size: 16,
+                                    size: 18,
                                   ),
-                                  const SizedBox(width: 4),
+                                  const SizedBox(width: 6),
                                   Text(
                                     'Start',
                                     style: TextStyle(
@@ -1133,27 +1144,27 @@ class _ShoulderPressState extends State<ShoulderPress> {
                                               ? Colors.white70
                                               : Colors.white,
                                       fontWeight: FontWeight.w600,
-                                      fontSize: 13,
+                                      fontSize: 14,
                                     ),
                                   ),
                                 ],
                               ),
                             ),
                           ),
-                          const SizedBox(width: 8),
+                          const SizedBox(width: 10),
                           InkWell(
                             onTap: _sessionActive ? _endSession : null,
                             borderRadius: BorderRadius.circular(8),
                             child: Container(
                               padding: const EdgeInsets.symmetric(
                                 horizontal: 12,
-                                vertical: 6,
+                                vertical: 8,
                               ),
                               decoration: BoxDecoration(
                                 color:
                                     _sessionActive
-                                        ? Colors.red.withAlpha(60)
-                                        : Colors.red.withAlpha(20),
+                                        ? Colors.red.withAlpha(180) // enabled
+                                        : Colors.red.withAlpha(64), // disabled
                                 borderRadius: BorderRadius.circular(8),
                               ),
                               child: Row(
@@ -1164,9 +1175,9 @@ class _ShoulderPressState extends State<ShoulderPress> {
                                         _sessionActive
                                             ? Colors.white
                                             : Colors.white70,
-                                    size: 16,
+                                    size: 18,
                                   ),
-                                  const SizedBox(width: 4),
+                                  const SizedBox(width: 6),
                                   Text(
                                     'End',
                                     style: TextStyle(
@@ -1175,7 +1186,7 @@ class _ShoulderPressState extends State<ShoulderPress> {
                                               ? Colors.white
                                               : Colors.white70,
                                       fontWeight: FontWeight.w600,
-                                      fontSize: 13,
+                                      fontSize: 14,
                                     ),
                                   ),
                                 ],

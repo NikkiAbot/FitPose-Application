@@ -497,12 +497,33 @@ class _LungesState extends State<Lunges> {
 
       if (_currentStage == 'down' &&
           (previousStage == 'mid' || previousStage == 'init')) {
-        _counter += 1;
-        _attemptedReps += 1;
-        if (kDebugMode) {
-          print(
-            '[Lunges] 🎉🎉🎉 REP #$_counter COUNTED! ($previousStage → down) 🎉🎉🎉',
-          );
+        // Count only when a session is active
+        if (_sessionActive) {
+          // Always track attempts during active session
+          _attemptedReps += 1;
+
+          // Gate clean reps by form: no knee-over-toe and knee angles within safe range
+          bool goodAngles = true;
+          if (_kneeAnalysis != null) {
+            final leftErr = _kneeAnalysis!['left']['error'] as bool;
+            final rightErr = _kneeAnalysis!['right']['error'] as bool;
+            goodAngles = !leftErr && !rightErr;
+          }
+
+          if (_errorClass != 'K' && goodAngles) {
+            _counter += 1;
+            if (kDebugMode) {
+              print(
+                '[Lunges] ✅ Clean rep counted #$_counter ($previousStage → down)',
+              );
+            }
+          } else if (kDebugMode) {
+            print(
+              '[Lunges] ⚠️ Attempt recorded but form not clean (errorClass=$_errorClass, goodAngles=$goodAngles)',
+            );
+          }
+        } else if (kDebugMode) {
+          print('[Lunges] ⏸️ Session not active — ignoring rep/attempt');
         }
       } else if (kDebugMode) {
         if (_currentStage == 'down' && previousStage == 'down') {
@@ -707,6 +728,15 @@ class _LungesState extends State<Lunges> {
                                           ),
                                         ),
                                         const SizedBox(height: 4),
+                                        // Attempts (total)
+                                        Text(
+                                          'Attempts: $_attemptedReps',
+                                          style: const TextStyle(
+                                            fontSize: 10,
+                                            color: Colors.white60,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 2),
                                         // Remove the " •  Total: $_counter"
                                         Text(
                                           'Sets: $_setsCompleted',
@@ -884,7 +914,7 @@ class _LungesState extends State<Lunges> {
                         ),
                       ),
                     ), // end of main HUD Positioned
-                    // Bottom-center Start / End buttons (transparent / faint colors)
+                    // Bottom-center Start / End buttons (compact, higher visibility like Squats)
                     Positioned(
                       bottom: 24,
                       left: 0,
@@ -893,47 +923,93 @@ class _LungesState extends State<Lunges> {
                         child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            ElevatedButton(
-                              onPressed: _sessionActive ? null : _startSession,
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: Colors.green.withValues(
-                                  alpha: 0.15,
-                                ),
-                                elevation: 0,
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(24),
-                                ),
+                            InkWell(
+                              onTap: _sessionActive ? null : _startSession,
+                              borderRadius: BorderRadius.circular(8),
+                              child: Container(
                                 padding: const EdgeInsets.symmetric(
-                                  horizontal: 28,
-                                  vertical: 12,
+                                  horizontal: 16,
+                                  vertical: 10,
                                 ),
-                                shadowColor: Colors.transparent,
-                              ),
-                              child: const Text(
-                                'Start',
-                                style: TextStyle(color: Colors.white),
+                                decoration: BoxDecoration(
+                                  color:
+                                      _sessionActive
+                                          ? Colors.green.withAlpha(
+                                            64,
+                                          ) // disabled
+                                          : Colors.green.withAlpha(
+                                            180,
+                                          ), // enabled
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: Row(
+                                  children: [
+                                    Icon(
+                                      Icons.play_arrow,
+                                      size: 18,
+                                      color:
+                                          _sessionActive
+                                              ? Colors.white70
+                                              : Colors.white,
+                                    ),
+                                    const SizedBox(width: 6),
+                                    Text(
+                                      'Start',
+                                      style: TextStyle(
+                                        fontSize: 14,
+                                        fontWeight: FontWeight.w600,
+                                        color:
+                                            _sessionActive
+                                                ? Colors.white70
+                                                : Colors.white,
+                                      ),
+                                    ),
+                                  ],
+                                ),
                               ),
                             ),
-                            const SizedBox(width: 12),
-                            ElevatedButton(
-                              onPressed: _sessionActive ? _endSession : null,
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: Colors.red.withValues(
-                                  alpha: 0.12,
-                                ),
-                                elevation: 0,
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(24),
-                                ),
+                            const SizedBox(width: 14),
+                            InkWell(
+                              onTap: _sessionActive ? _endSession : null,
+                              borderRadius: BorderRadius.circular(8),
+                              child: Container(
                                 padding: const EdgeInsets.symmetric(
-                                  horizontal: 28,
-                                  vertical: 12,
+                                  horizontal: 16,
+                                  vertical: 10,
                                 ),
-                                shadowColor: Colors.transparent,
-                              ),
-                              child: const Text(
-                                'End',
-                                style: TextStyle(color: Colors.white),
+                                decoration: BoxDecoration(
+                                  color:
+                                      _sessionActive
+                                          ? Colors.red.withAlpha(180) // enabled
+                                          : Colors.red.withAlpha(
+                                            64,
+                                          ), // disabled
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: Row(
+                                  children: [
+                                    Icon(
+                                      Icons.stop,
+                                      size: 18,
+                                      color:
+                                          _sessionActive
+                                              ? Colors.white
+                                              : Colors.white70,
+                                    ),
+                                    const SizedBox(width: 6),
+                                    Text(
+                                      'End',
+                                      style: TextStyle(
+                                        fontSize: 14,
+                                        fontWeight: FontWeight.w600,
+                                        color:
+                                            _sessionActive
+                                                ? Colors.white
+                                                : Colors.white70,
+                                      ),
+                                    ),
+                                  ],
+                                ),
                               ),
                             ),
                           ],

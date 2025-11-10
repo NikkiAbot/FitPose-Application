@@ -653,6 +653,14 @@ class _PlankState extends State<Plank> {
     return '$minutes:$seconds';
   }
 
+  // NEW: formatted attempted plank time from `_attemptedPlank` seconds
+  String get formattedAttemptedTime {
+    final d = Duration(seconds: _attemptedPlank);
+    final minutes = d.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final seconds = d.inSeconds.remainder(60).toString().padLeft(2, '0');
+    return '$minutes:$seconds';
+  }
+
   void _showInstructionsDialog() {
     showDialog(
       context: context,
@@ -784,7 +792,7 @@ class _PlankState extends State<Plank> {
                           ),
                         ),
                       ),
-                    // CENTER: Start / End buttons
+                    // CENTER: Start / End buttons (compact, higher-visibility like Squats)
                     Positioned.fill(
                       child: IgnorePointer(
                         ignoring: false,
@@ -792,42 +800,88 @@ class _PlankState extends State<Plank> {
                           child: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              ElevatedButton(
-                                onPressed:
+                              InkWell(
+                                onTap:
                                     _userRequestedStart
                                         ? null
                                         : _onStartPressed,
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: Colors.green.withValues(
-                                    alpha: 0.12,
-                                  ),
-                                  foregroundColor: Colors.greenAccent,
-                                  elevation: 0,
+                                borderRadius: BorderRadius.circular(8),
+                                child: Container(
                                   padding: const EdgeInsets.symmetric(
-                                    horizontal: 20,
-                                    vertical: 12,
+                                    horizontal: 12,
+                                    vertical: 8,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color:
+                                        _userRequestedStart
+                                            ? Colors.green.withAlpha(64)
+                                            : Colors.green.withAlpha(180),
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: Row(
+                                    children: const [
+                                      Icon(
+                                        Icons.play_arrow,
+                                        size: 18,
+                                        color: Colors.white,
+                                      ),
+                                      SizedBox(width: 6),
+                                      Text(
+                                        'Start',
+                                        style: TextStyle(
+                                          color: Colors.white,
+                                          fontWeight: FontWeight.w600,
+                                          fontSize: 14,
+                                        ),
+                                      ),
+                                    ],
                                   ),
                                 ),
-                                child: const Text('Start'),
                               ),
-                              const SizedBox(width: 16),
-                              ElevatedButton(
-                                onPressed:
+                              const SizedBox(width: 10),
+                              InkWell(
+                                onTap:
                                     (_userRequestedStart || _holding)
                                         ? _onEndPressed
                                         : null,
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: Colors.red.withValues(
-                                    alpha: 0.12,
-                                  ),
-                                  foregroundColor: Colors.redAccent,
-                                  elevation: 0,
+                                borderRadius: BorderRadius.circular(8),
+                                child: Container(
                                   padding: const EdgeInsets.symmetric(
-                                    horizontal: 20,
-                                    vertical: 12,
+                                    horizontal: 12,
+                                    vertical: 8,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color:
+                                        (_userRequestedStart || _holding)
+                                            ? Colors.red.withAlpha(180)
+                                            : Colors.red.withAlpha(64),
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      Icon(
+                                        Icons.stop,
+                                        size: 18,
+                                        color:
+                                            (_userRequestedStart || _holding)
+                                                ? Colors.white
+                                                : Colors.white70,
+                                      ),
+                                      const SizedBox(width: 6),
+                                      Text(
+                                        'End',
+                                        style: TextStyle(
+                                          color:
+                                              (_userRequestedStart || _holding)
+                                                  ? Colors.white
+                                                  : Colors.white70,
+                                          fontWeight: FontWeight.w600,
+                                          fontSize: 14,
+                                        ),
+                                      ),
+                                    ],
                                   ),
                                 ),
-                                child: const Text('End'),
                               ),
                             ],
                           ),
@@ -860,6 +914,16 @@ class _PlankState extends State<Plank> {
                                     style: const TextStyle(
                                       fontSize: 18,
                                       fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  // NEW: show attempted plank time similar to Attempts in other workouts
+                                  Text(
+                                    'Attempted: $formattedAttemptedTime',
+                                    style: const TextStyle(
+                                      fontSize: 12,
+                                      color: Colors.white70,
+                                      fontWeight: FontWeight.w600,
                                     ),
                                   ),
                                   Text(

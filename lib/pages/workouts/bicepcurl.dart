@@ -810,6 +810,16 @@ class _BicepCurlState extends State<BicepCurl> {
                                             ),
                                           ),
                                           const SizedBox(height: 2),
+                                          // Show attempts similar to other workouts
+                                          Text(
+                                            'Attempts: $_attemptedReps',
+                                            style: const TextStyle(
+                                              color: Colors.white70,
+                                              fontSize: 11,
+                                              fontWeight: FontWeight.w400,
+                                            ),
+                                          ),
+                                          const SizedBox(height: 2),
                                           // Removed confusing "Total" display; show only Sets
                                           Text(
                                             'Sets: $_setsCount',
@@ -1000,7 +1010,7 @@ class _BicepCurlState extends State<BicepCurl> {
                       child: Row(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
-                          // Start button
+                          // Start button (compact, higher-visibility like Squats)
                           InkWell(
                             onTap: _sessionActive ? null : _startSession,
                             borderRadius: BorderRadius.circular(8),
@@ -1012,8 +1022,10 @@ class _BicepCurlState extends State<BicepCurl> {
                               decoration: BoxDecoration(
                                 color:
                                     _sessionActive
-                                        ? Colors.green.withValues(alpha: 0.08)
-                                        : Colors.green.withValues(alpha: 0.18),
+                                        ? Colors.green.withAlpha(64) // disabled
+                                        : Colors.green.withAlpha(
+                                          180,
+                                        ), // enabled
                                 borderRadius: BorderRadius.circular(8),
                               ),
                               child: Row(
@@ -1043,7 +1055,7 @@ class _BicepCurlState extends State<BicepCurl> {
                             ),
                           ),
                           const SizedBox(width: 10),
-                          // End button
+                          // End button (compact, higher-visibility like Squats)
                           InkWell(
                             onTap: _sessionActive ? _endSession : null,
                             borderRadius: BorderRadius.circular(8),
@@ -1055,8 +1067,8 @@ class _BicepCurlState extends State<BicepCurl> {
                               decoration: BoxDecoration(
                                 color:
                                     _sessionActive
-                                        ? Colors.red.withValues(alpha: 0.18)
-                                        : Colors.red.withValues(alpha: 0.06),
+                                        ? Colors.red.withAlpha(180) // enabled
+                                        : Colors.red.withAlpha(64), // disabled
                                 borderRadius: BorderRadius.circular(8),
                               ),
                               child: Row(

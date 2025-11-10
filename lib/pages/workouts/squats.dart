@@ -274,6 +274,16 @@ class _SquatsState extends State<Squats> {
             ? 'Good posture'
             : (!upright ? 'Keep chest up' : 'Balance knees evenly');
 
+    // Prepare context-aware guidance for HUD (does not affect counting logic)
+    _feedback = _buildGuidance(
+      avgKnee: _avgKnee!,
+      leftKnee: _leftKnee!,
+      rightKnee: _rightKnee!,
+      torsoAngle: _torsoAngle!,
+      kneesDiff: kneesDiff,
+      state: _state,
+    );
+
     // FSM for rep counting (updated to only count during session)
     if (_state == 'waiting') {
       if (_avgKnee! < downThresh) {
@@ -308,6 +318,56 @@ class _SquatsState extends State<Squats> {
         _anomaly = false;
       }
     }
+  }
+
+  // Build rich, non-intrusive guidance text for the HUD.
+  // NOTE: This only affects displayed text; it does NOT alter any counters or thresholds.
+  String _buildGuidance({
+    required double avgKnee,
+    required double leftKnee,
+    required double rightKnee,
+    required double torsoAngle,
+    required double kneesDiff,
+    required String state,
+  }) {
+    final List<String> parts = [];
+
+    // Primary movement cue (condensed). Only one movement message.
+    final nearDown = avgKnee >= downThresh && avgKnee <= downThresh + 12;
+    final nearUp = avgKnee >= upThresh - 8 && avgKnee <= upThresh;
+
+    if (state == 'waiting' || state == 'up') {
+      if (nearDown) {
+        parts.add('Almost there: ${avgKnee.toStringAsFixed(0)}°');
+      } else if (avgKnee > downThresh + 12) {
+        parts.add('Lower to ~$downThresh°');
+      } else {
+        parts.add('Go down');
+      }
+    } else {
+      // state == 'down'
+      if (nearUp) {
+        parts.add('Almost up');
+      } else if (avgKnee < upThresh - 8) {
+        parts.add('Extend up');
+      } else {
+        parts.add('Finish up');
+      }
+    }
+
+    // Optional posture cues (max one each)
+    if (torsoAngle >= maxTorsoLeanDeg * 0.9) {
+      parts.add('Chest up');
+    }
+    if (kneesDiff >= maxAsymmetryDeg * 0.8) {
+      parts.add('Even knees');
+    }
+    if (avgKnee <= downThresh - 10) {
+      parts.add('Good depth');
+    }
+
+    // Join with new lines for readability instead of bullet dots.
+    return parts.join('\n');
   }
 
   Future<void> _analyzeWithOnnx(Pose pose) async {
@@ -359,7 +419,8 @@ class _SquatsState extends State<Squats> {
       // We only count reps in the rule-based FSM above.
       // if (repDetected && !_anomaly && _postureGood) _reps += 1; // removed
 
-      _feedback = _postureGood ? 'Good form' : 'Fix form';
+      // Keep the guidance built in _analyzePose; do not overwrite with a generic label.
+      // The HUD already shows _postureStatus separately.
     } catch (e) {
       if (kDebugMode) print('[ONNX] Inference failed: $e');
     }
@@ -667,6 +728,16 @@ class _SquatsState extends State<Squats> {
                                           ),
                                         ),
                                         const SizedBox(height: 6),
+                                        // Show total attempts similar to lunges HUD
+                                        Text(
+                                          'Attempts: $_attemptedReps',
+                                          textAlign: TextAlign.center,
+                                          style: TextStyle(
+                                            color: Colors.white70,
+                                            fontSize: 11,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 4),
                                         Text(
                                           'Sets: $_setsCount',
                                           textAlign: TextAlign.center,
@@ -710,7 +781,7 @@ class _SquatsState extends State<Squats> {
                       ),
                     ),
 
-                    // Session control bar (Start / End)
+                    // Session control bar (Start / End) - compact layout
                     Positioned(
                       left: 16,
                       right: 16,
@@ -729,8 +800,10 @@ class _SquatsState extends State<Squats> {
                               decoration: BoxDecoration(
                                 color:
                                     _sessionActive
-                                        ? Colors.green.withAlpha(20)
-                                        : Colors.green.withAlpha(48),
+                                        ? Colors.green.withAlpha(64) // disabled
+                                        : Colors.green.withAlpha(
+                                          180,
+                                        ), // enabled
                                 borderRadius: BorderRadius.circular(8),
                               ),
                               child: Row(
@@ -771,8 +844,8 @@ class _SquatsState extends State<Squats> {
                               decoration: BoxDecoration(
                                 color:
                                     _sessionActive
-                                        ? Colors.red.withAlpha(48)
-                                        : Colors.red.withAlpha(12),
+                                        ? Colors.red.withAlpha(180) // enabled
+                                        : Colors.red.withAlpha(64), // disabled
                                 borderRadius: BorderRadius.circular(8),
                               ),
                               child: Row(

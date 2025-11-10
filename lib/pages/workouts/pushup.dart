@@ -546,7 +546,7 @@ class _PushUpState extends State<PushUp> {
                         ),
                       ),
 
-                    // 🟢 Start / 🔴 End Controls — compact & bottom-centered
+                    // 🟢 Start / 🔴 End Controls — styled like Squats/ShoulderPress (compact InkWell buttons)
                     Positioned(
                       bottom: 125, // placed slightly above the HUD
                       left: 0,
@@ -554,52 +554,88 @@ class _PushUpState extends State<PushUp> {
                       child: Row(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
-                          ElevatedButton(
-                            onPressed: _sessionActive ? null : _startSession,
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.green.withValues(
-                                alpha: 0.25,
-                              ),
-                              foregroundColor: Colors.greenAccent,
-                              elevation: 0,
+                          InkWell(
+                            onTap: _sessionActive ? null : _startSession,
+                            borderRadius: BorderRadius.circular(8),
+                            child: Container(
                               padding: const EdgeInsets.symmetric(
-                                horizontal: 14,
-                                vertical: 6,
+                                horizontal: 12,
+                                vertical: 8,
                               ),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(10),
+                              decoration: BoxDecoration(
+                                color:
+                                    _sessionActive
+                                        ? Colors.green.withAlpha(64) // disabled
+                                        : Colors.green.withAlpha(
+                                          180,
+                                        ), // enabled
+                                borderRadius: BorderRadius.circular(8),
                               ),
-                            ),
-                            child: const Text(
-                              'Start',
-                              style: TextStyle(
-                                fontSize: 13,
-                                fontWeight: FontWeight.w600,
+                              child: Row(
+                                children: [
+                                  Icon(
+                                    Icons.play_arrow,
+                                    color:
+                                        _sessionActive
+                                            ? Colors.white70
+                                            : Colors.white,
+                                    size: 18,
+                                  ),
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    'Start',
+                                    style: TextStyle(
+                                      color:
+                                          _sessionActive
+                                              ? Colors.white70
+                                              : Colors.white,
+                                      fontWeight: FontWeight.w600,
+                                      fontSize: 14,
+                                    ),
+                                  ),
+                                ],
                               ),
                             ),
                           ),
                           const SizedBox(width: 10),
-                          ElevatedButton(
-                            onPressed: _sessionActive ? _endSession : null,
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.red.withValues(
-                                alpha: 0.25,
-                              ),
-                              foregroundColor: Colors.redAccent,
-                              elevation: 0,
+                          InkWell(
+                            onTap: _sessionActive ? _endSession : null,
+                            borderRadius: BorderRadius.circular(8),
+                            child: Container(
                               padding: const EdgeInsets.symmetric(
-                                horizontal: 14,
-                                vertical: 6,
+                                horizontal: 12,
+                                vertical: 8,
                               ),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(10),
+                              decoration: BoxDecoration(
+                                color:
+                                    _sessionActive
+                                        ? Colors.red.withAlpha(180) // enabled
+                                        : Colors.red.withAlpha(64), // disabled
+                                borderRadius: BorderRadius.circular(8),
                               ),
-                            ),
-                            child: const Text(
-                              'End',
-                              style: TextStyle(
-                                fontSize: 13,
-                                fontWeight: FontWeight.w600,
+                              child: Row(
+                                children: [
+                                  Icon(
+                                    Icons.stop,
+                                    color:
+                                        _sessionActive
+                                            ? Colors.white
+                                            : Colors.white70,
+                                    size: 18,
+                                  ),
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    'End',
+                                    style: TextStyle(
+                                      color:
+                                          _sessionActive
+                                              ? Colors.white
+                                              : Colors.white70,
+                                      fontWeight: FontWeight.w600,
+                                      fontSize: 14,
+                                    ),
+                                  ),
+                                ],
                               ),
                             ),
                           ),
@@ -683,6 +719,14 @@ class _PushUpState extends State<PushUp> {
                                   const SizedBox(height: 2),
                                   Text(
                                     'Sets: $_setCount', // remove " | Total: ..."
+                                    style: const TextStyle(
+                                      fontSize: 12,
+                                      color: Colors.white70,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    'Attempts: $_attemptedReps',
                                     style: const TextStyle(
                                       fontSize: 12,
                                       color: Colors.white70,

@@ -71,7 +71,8 @@ class _SquatsState extends State<Squats> {
   // Thresholds
   static const double downThresh = 90;
   static const double upThresh = 160;
-  static const double maxTorsoLeanDeg = 20;
+  // Relaxed torso lean allowance: previously 20°, now 35° to permit natural forward lean.
+  static const double maxTorsoLeanDeg = 35;
   static const double maxAsymmetryDeg = 15;
 
   InputImageRotation _rotation = InputImageRotation.rotation270deg;
@@ -266,13 +267,11 @@ class _SquatsState extends State<Squats> {
         (180 / math.pi) * math.atan2(torsoVec.dx.abs(), torsoVec.dy.abs());
 
     final kneesDiff = ((_leftKnee ?? 0) - (_rightKnee ?? 0)).abs();
-    final upright = _torsoAngle! < maxTorsoLeanDeg;
+    // Relax strict upright requirement: allow forward torso lean unless extreme.
     final symmetric = kneesDiff < maxAsymmetryDeg;
-    _postureGood = upright && symmetric;
-    _postureStatus =
-        _postureGood
-            ? 'Good posture'
-            : (!upright ? 'Keep chest up' : 'Balance knees evenly');
+    _postureGood = symmetric; // Only knee symmetry governs "good posture" now.
+    // Posture status focuses on knees; chest cue handled in guidance only when extreme.
+    _postureStatus = _postureGood ? 'Good posture' : 'Balance knees evenly';
 
     // Prepare context-aware guidance for HUD (does not affect counting logic)
     _feedback = _buildGuidance(
@@ -356,7 +355,8 @@ class _SquatsState extends State<Squats> {
     }
 
     // Optional posture cues (max one each)
-    if (torsoAngle >= maxTorsoLeanDeg * 0.9) {
+    // Chest reminder only if lean is very pronounced (> maxTorsoLeanDeg + 15°)
+    if (torsoAngle >= (maxTorsoLeanDeg + 15)) {
       parts.add('Chest up');
     }
     if (kneesDiff >= maxAsymmetryDeg * 0.8) {

@@ -58,7 +58,8 @@ class _LungesState extends State<Lunges> {
 
   // Reps/sets tracking
   static const int _repsPerSet = 8; // changed from 12 to 8
-  int get _setsCompleted => _counter ~/ _repsPerSet;
+  // Deprecated: replaced by session-only sets calculation in HUD
+  // int get _setsCompleted => _counter ~/ _repsPerSet; // removed unused getter
 
   // New: store counter at session start so we can compute session-only reps
   int? _counterAtSessionStart;
@@ -718,9 +719,9 @@ class _LungesState extends State<Lunges> {
                                           ),
                                         ),
                                         const SizedBox(height: 4),
-                                        // Display total overall reps
+                                        // Display session-only reps (counter delta from session start)
                                         Text(
-                                          '$_counter',
+                                          '${_counterAtSessionStart == null ? 0 : _counter - _counterAtSessionStart!}',
                                           style: const TextStyle(
                                             fontSize: 28,
                                             fontWeight: FontWeight.bold,
@@ -728,18 +729,18 @@ class _LungesState extends State<Lunges> {
                                           ),
                                         ),
                                         const SizedBox(height: 4),
-                                        // Attempts (total)
+                                        // Session-only attempts
                                         Text(
-                                          'Attempts: $_attemptedReps',
+                                          'Attempts: ${_attemptedAtSessionStart == null ? 0 : _attemptedReps - _attemptedAtSessionStart!}',
                                           style: const TextStyle(
                                             fontSize: 10,
                                             color: Colors.white60,
                                           ),
                                         ),
                                         const SizedBox(height: 2),
-                                        // Remove the " •  Total: $_counter"
+                                        // Session-only sets
                                         Text(
-                                          'Sets: $_setsCompleted',
+                                          'Sets: ${_counterAtSessionStart == null ? 0 : (_counter - _counterAtSessionStart!) ~/ _repsPerSet}',
                                           style: const TextStyle(
                                             fontSize: 10,
                                             color: Colors.white60,

@@ -36,26 +36,64 @@ class _LoginPageState extends State<LoginPage> {
       Navigator.pop(context);
     } on FirebaseAuthException catch (e) {
       Navigator.pop(context);
-      showErrorMessage(e.code);
+      final msg = switch (e.code) {
+        'invalid-credential' => 'Invalid credentials',
+        'wrong-password' => 'Invalid credentials',
+        'user-not-found' => 'Invalid credentials',
+        'invalid-email' => 'Invalid email address',
+        'user-disabled' => 'Account disabled',
+        _ => e.message ?? 'An error occurred',
+      };
+      showErrorMessage(msg);
     }
   }
 
   void showErrorMessage(String message) {
     showDialog(
       context: context,
-      barrierDismissible: true, // Allows tapping outside to dismiss
+      barrierDismissible: true,
       builder: (context) {
         return AlertDialog(
-          backgroundColor: const Color.fromARGB(255, 140, 140, 140),
-          title: Center(
-            child: Text(
-              message,
-              style: GoogleFonts.poppins(
-                color: Colors.white,
-                fontSize: 20,
-                fontWeight: FontWeight.w500,
+          backgroundColor: const Color(0xFF2B2B2B),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
+          contentPadding: const EdgeInsets.fromLTRB(20, 20, 20, 12),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.error_outline, color: Colors.redAccent),
+                  const SizedBox(width: 8),
+                  Text(
+                    'Sign in failed',
+                    style: GoogleFonts.poppins(
+                      color: Colors.white,
+                      fontSize: 18,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
               ),
-            ),
+              const SizedBox(height: 10),
+              Text(
+                message,
+                style: GoogleFonts.poppins(color: Colors.white70, fontSize: 14),
+              ),
+              const SizedBox(height: 12),
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  style: TextButton.styleFrom(
+                    foregroundColor: const Color.fromARGB(255, 66, 164, 244),
+                  ),
+                  child: const Text('OK'),
+                ),
+              ),
+            ],
           ),
         );
       },

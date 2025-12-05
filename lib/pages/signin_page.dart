@@ -295,7 +295,7 @@ class _SignInPageState extends State<SignInPage> {
                 GestureDetector(
                   onTap: widget.onTap,
                   child: Text(
-                    'Sign Up',
+                    'Log In',
                     style: GoogleFonts.poppins(
                       color: const Color.fromARGB(255, 66, 164, 244),
                       fontSize: 14,
